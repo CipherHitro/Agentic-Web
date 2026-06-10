@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
+from app.config import settings
 from app.scraper.page_handler import navigate, scroll_to_bottom, wait_for_selector
 from app.scraper.screenshot import capture_screenshot_base64
 from app.tools.extraction_tools import extract_clean_content
@@ -13,10 +14,13 @@ class BrowserManager:
         self._browser: Optional[Browser] = None
         self._headed: bool = False
 
-    async def start(self, engine: str = "chromium", headless: bool = True):
+    async def start(self, engine: str = "chromium", headless: Optional[bool] = None):
         """Launch browser. headless=False shows the actual browser window."""
         if self._browser:
             return self._browser
+
+        if headless is None:
+            headless = not settings.playwright_headed
 
         self._headed = not headless
         self._playwright = await async_playwright().start()

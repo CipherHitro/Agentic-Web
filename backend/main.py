@@ -12,10 +12,8 @@ from app.api.routes import router as api_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Launch browser
-    # Use headed mode if env var is set
-    headless = os.getenv("PLAYWRIGHT_HEADED", "false").lower() != "true"
-    await browser_manager.start(headless=headless)
+    # Startup: Launch browser using the settings/env configuration
+    await browser_manager.start()
     yield
     # Shutdown
     await browser_manager.close()
