@@ -1,25 +1,24 @@
-import os
 from pathlib import Path
-from dotenv import load_dotenv
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
 
 
-class Settings:
-    openrouter_api_key: str | None = os.getenv("OPENROUTER_API_KEY")
-    openrouter_base_url: str = os.getenv(
-        "OPENROUTER_BASE_URL",
-        "https://openrouter.ai/api/v1",
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
-    openrouter_model: str = os.getenv(
-        "OPENROUTER_MODEL",
-        "google/gemini-2.5-flash-lite",
-    )
-    frontend_url: str = os.getenv("FRONTEND_URL", "http://localhost:8501")
-    app_title: str = os.getenv("APP_TITLE", "Agentic Web AI")
-    playwright_headed: bool = os.getenv("PLAYWRIGHT_HEADED", "false").lower() == "true"
+
+    openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "google/gemini-2.5-flash-lite"
+    frontend_url: str = "http://localhost:8501"
+    app_title: str = "Agentic Web AI"
+    playwright_headed: bool = False
 
 
 settings = Settings()
+
