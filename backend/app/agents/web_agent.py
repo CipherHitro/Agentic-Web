@@ -76,11 +76,12 @@ class AIAgent:
 
                 logger.info(f"Executing tool '{tool_name}' with args: {tool_args}")
                 tool_result = await execute_tool(tool_name, tool_args)
-                logger.info(f"Tool '{tool_name}' execution completed. Success: {tool_result.get('success', False)}")
+                is_success = tool_result.get("success", False) if isinstance(tool_result, dict) else True
+                logger.info(f"Tool '{tool_name}' execution completed. Success: {is_success}")
 
                 last_tool_used = tool_name
                 last_tool_result = tool_result
-                last_raw_url = tool_args.get("url")
+                last_raw_url = tool_args.get("url") if isinstance(tool_args, dict) else None
 
                 assistant_msg["tool_calls"].append({
                     "id": tool_call.id,

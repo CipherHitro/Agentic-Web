@@ -17,7 +17,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: Optional[str] = ""
     tool_used: Optional[str] = None
-    tool_result: Optional[dict] = None
+    tool_result: Optional[Any] = None
     raw_url: Optional[str] = None
     new_messages: Optional[List[Dict[str, Any]]] = None
 

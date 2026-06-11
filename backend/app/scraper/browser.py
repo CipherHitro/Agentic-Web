@@ -35,6 +35,7 @@ class BrowserManager:
 
         launch_options: Dict[str, Any] = {"headless": headless}
         if not headless:
+            launch_options["slow_mo"] = 500
             launch_options["args"] = [
                 "--start-maximized",
                 "--disable-blink-features=AutomationControlled",
@@ -130,6 +131,10 @@ class BrowserManager:
 
                 if take_screenshot:
                     result["screenshot"] = await capture_screenshot_base64(page)
+
+                if self._headed:
+                    logger.info("Headed mode: sleeping 3 seconds before closing page for demo visibility")
+                    await asyncio.sleep(3.0)
 
                 return result
 

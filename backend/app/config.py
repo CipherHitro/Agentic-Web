@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:8501"
     app_title: str = "Agentic Web AI"
     playwright_headed: bool = False
+    tavily_api_key: str | None = None
 
 
 settings = Settings()
