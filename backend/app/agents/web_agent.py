@@ -12,7 +12,7 @@ class AIAgent:
         self.model = settings.openrouter_model
         self.tools = get_tool_definitions()
 
-    async def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    async def chat(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Main chat loop. Handles tool calling automatically."""
         client = get_openai_client()
         full_messages: List[Dict[str, Any]] = [
@@ -36,29 +36,29 @@ class AIAgent:
 
             tool_result = await execute_tool(tool_name, tool_args)
 
-            full_messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {
-                                "name": tool_name,
-                                "arguments": json.dumps(tool_args),
-                            },
-                        }
-                    ],
-                }
-            )
-            full_messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(tool_result),
-                }
-            )
+            assistant_msg = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(tool_args),
+                        },
+                    }
+                ],
+            }
+            tool_msg = {
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": tool_name,
+                "content": json.dumps(tool_result),
+            }
+
+            full_messages.append(assistant_msg)
+            full_messages.append(tool_msg)
 
             final_response = await client.chat.completions.create(
                 model=self.model,
@@ -66,17 +66,33 @@ class AIAgent:
                 tools=self.tools,
             )
 
+            final_content = final_response.choices[0].message.content or ""
             return {
-                "response": final_response.choices[0].message.content or "",
+                "response": final_content,
                 "tool_used": tool_name,
                 "tool_result": tool_result,
                 "raw_url": tool_args.get("url"),
+                "new_messages": [
+                    assistant_msg,
+                    tool_msg,
+                    {
+                        "role": "assistant",
+                        "content": final_content,
+                    }
+                ]
             }
 
+        final_content = message.content or ""
         return {
-            "response": message.content or "",
+            "response": final_content,
             "tool_used": None,
             "tool_result": None,
+            "new_messages": [
+                {
+                    "role": "assistant",
+                    "content": final_content,
+                }
+            ]
         }
 
 

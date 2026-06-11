@@ -11,7 +11,7 @@ class BrowserEngine(str, Enum):
 
 
 class ChatRequest(BaseModel):
-    messages: List[Dict[str, str]]
+    messages: List[Dict[str, Any]]
 
 
 class ChatResponse(BaseModel):
@@ -19,6 +19,7 @@ class ChatResponse(BaseModel):
     tool_used: Optional[str] = None
     tool_result: Optional[dict] = None
     raw_url: Optional[str] = None
+    new_messages: Optional[List[Dict[str, Any]]] = None
 
 
 class ScrapeRequest(BaseModel):

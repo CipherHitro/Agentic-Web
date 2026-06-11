@@ -20,6 +20,9 @@ st.set_page_config(
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "api_messages" not in st.session_state:
+    st.session_state.api_messages = []
+
 # Sidebar
 with st.sidebar:
     st.title("🌐 Agentic Web AI")
@@ -66,6 +69,7 @@ with st.form(key="chat_form", clear_on_submit=True):
 
 if clear_btn:
     st.session_state.messages = []
+    st.session_state.api_messages = []
     st.rerun()
 
 if submitted and user_input.strip():
@@ -74,20 +78,18 @@ if submitted and user_input.strip():
         "role": "user",
         "content": user_input
     })
+    st.session_state.api_messages.append({
+        "role": "user",
+        "content": user_input
+    })
     
     # Show spinner while AI thinks
     with st.spinner("🤖 AI is thinking... (may browse the web)"):
         try:
-            # Convert messages to API format
-            api_messages = [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ]
-            
             # Call FastAPI backend
             response = requests.post(
                 f"{API_URL}/chat/",
-                json={"messages": api_messages},
+                json={"messages": st.session_state.api_messages},
                 timeout=120  # Browsing may take time
             )
             
@@ -99,8 +101,18 @@ if submitted and user_input.strip():
                     "role": "assistant",
                     "content": result["response"],
                     "tool_used": result.get("tool_used"),
-                    "raw_url": result.get("raw_url")
+                    "raw_url": result.get("raw_url"),
+                    "tool_result": result.get("tool_result")
                 })
+                
+                # Update api messages with returned new_messages
+                if "new_messages" in result and result["new_messages"]:
+                    st.session_state.api_messages.extend(result["new_messages"])
+                else:
+                    st.session_state.api_messages.append({
+                        "role": "assistant",
+                        "content": result["response"]
+                    })
                 
                 # If tool was used, show raw data in expander
                 if result.get("tool_result") and result["tool_result"].get("success"):

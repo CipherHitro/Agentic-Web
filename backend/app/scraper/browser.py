@@ -17,7 +17,10 @@ class BrowserManager:
     async def start(self, engine: str = "chromium", headless: Optional[bool] = None):
         """Launch browser. headless=False shows the actual browser window."""
         if self._browser:
-            return self._browser
+            if self._browser.is_connected():
+                return self._browser
+            print("Browser disconnected or crashed. Cleaning up and restarting...")
+            await self.close()
 
         if headless is None:
             headless = not settings.playwright_headed
@@ -39,8 +42,8 @@ class BrowserManager:
 
     async def new_context(self, user_agent: Optional[str] = None) -> BrowserContext:
         """Create isolated browser context with anti-bot measures."""
-        if not self._browser:
-            await self.start()
+        if not self._browser or not self._browser.is_connected():
+            await self.start(headless=not self._headed if self._browser else None)
 
         context_options: Dict[str, Any] = {
             "viewport": {"width": 1920, "height": 1080},
@@ -50,7 +53,13 @@ class BrowserManager:
         if user_agent:
             context_options["user_agent"] = user_agent
 
-        context = await self._browser.new_context(**context_options)
+        try:
+            context = await self._browser.new_context(**context_options)
+        except Exception as e:
+            print(f"Failed to create browser context: {e}. Attempting browser reconnect...")
+            await self.close()
+            await self.start(headless=not self._headed)
+            context = await self._browser.new_context(**context_options)
         await context.add_init_script(
             """
             Object.defineProperty(navigator, 'webdriver', {
@@ -75,6 +84,9 @@ class BrowserManager:
         max_text_length: int = 8000,
     ) -> Dict[str, Any]:
         """Main browsing tool. Returns clean, structured content for the AI."""
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
         context = None
         try:
             context = await self.new_context()
