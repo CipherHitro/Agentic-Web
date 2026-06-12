@@ -18,6 +18,8 @@ class BrowserManager:
         self._browser: Optional[Browser] = None
         self._headed: bool = False
         self._lock = asyncio.Lock()
+        self.current_page: Optional[Page] = None
+        self.current_context: Optional[BrowserContext] = None
 
     async def _close_internal(self):
         if not self._browser and not self._playwright:
@@ -30,6 +32,10 @@ class BrowserManager:
             except Exception as exc:
                 logger.warning(f"Browser close skipped: {exc}")
             self._browser = None
+        
+        self.current_page = None
+        self.current_context = None
+
         if self._playwright:
             try:
                 await self._playwright.stop()
@@ -110,12 +116,22 @@ class BrowserManager:
         max_text_length: int = 8000,
     ) -> Dict[str, Any]:
         """Main browsing tool. Returns clean, structured content for the AI with retries on failure."""
+        # Close previous context/page if any to start fresh on a new root URL
+        if self.current_context:
+            try:
+                await self.current_context.close()
+            except Exception:
+                pass
+            self.current_context = None
+            self.current_page = None
+
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
         retries = 3
         backoff_factors = [1, 2, 4]
         last_error = None
+        success = False
 
         for attempt in range(retries + 1):
             context = None
@@ -146,15 +162,23 @@ class BrowserManager:
                 }
 
                 if extract_content:
-                    content, links = extract_clean_content(html_content, max_text_length=max_text_length)
+                    content, links, nav_links = extract_clean_content(
+                        html_content, base_url=url, max_text_length=max_text_length
+                    )
                     result["content"] = content
                     result["links"] = links
+                    result["navigation_links"] = nav_links
 
                 if take_screenshot:
                     result["screenshot"] = await capture_screenshot_base64(page)
 
+                # Store successful context and page for subsequent navigate_page calls
+                self.current_context = context
+                self.current_page = page
+                success = True
+
                 if self._headed:
-                    logger.info("Headed mode: sleeping 3 seconds before closing page for demo visibility")
+                    logger.info("Headed mode: sleeping 3 seconds for demo visibility")
                     await asyncio.sleep(3.0)
 
                 return result
@@ -167,8 +191,12 @@ class BrowserManager:
                     logger.info(f"Retrying in {sleep_time}s...")
                     await asyncio.sleep(sleep_time)
             finally:
-                if context:
-                    await context.close()
+                # Close context only if the browse attempt did NOT succeed
+                if not success and context:
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
 
         return {
             "url": url,

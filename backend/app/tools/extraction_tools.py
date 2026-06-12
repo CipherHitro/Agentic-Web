@@ -10,43 +10,98 @@ logger = logging.getLogger(__name__)
 
 def extract_clean_content(
     html_content: str,
+    base_url: str = "",
     max_text_length: int = 8000,
-) -> Tuple[str, List[Dict[str, Any]]]:
+) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    import urllib.parse
     try:
         soup = BeautifulSoup(html_content, "lxml")
     except Exception:
         soup = BeautifulSoup(html_content, "html.parser")
 
-    for element in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+    # 1. Extract navigation links from nav, header, aside elements before modifying the DOM
+    nav_links = []
+    for tag_name in ["nav", "header", "aside"]:
+        for container in soup.find_all(tag_name):
+            for a in container.find_all("a", href=True):
+                href = a["href"].strip()
+                text = a.get_text(strip=True)
+                if href and not href.startswith(("#", "javascript:", "mailto:", "tel:")):
+                    if base_url:
+                        absolute_url = urllib.parse.urljoin(base_url, href)
+                    else:
+                        absolute_url = href
+                    nav_links.append({
+                        "text": text or absolute_url,
+                        "url": absolute_url
+                    })
+
+    # Deduplicate navigation links
+    seen_nav = set()
+    unique_navigation_links = []
+    for item in nav_links:
+        if item["url"] not in seen_nav:
+            seen_nav.add(item["url"])
+            unique_navigation_links.append(item)
+            if len(unique_navigation_links) >= 30:
+                break
+
+    # 2. Decompose only non-visible / noise elements. Do NOT decompose nav, header, aside elements
+    for element in soup(["script", "style", "noscript"]):
         element.decompose()
 
+    # Get body text
     main_content = soup.find("article") or soup.find("main") or soup.body
     text_source = main_content if main_content else soup
     text = text_source.get_text(separator="\n", strip=True)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     text = "\n".join(lines)
 
+    # 3. Prepend navigation menu text block to the content so it is never stripped from the agent's view
+    nav_text_block = ""
+    if unique_navigation_links:
+        nav_lines = [f"- {item['text']}: {item['url']}" for item in unique_navigation_links]
+        nav_text_block = "[Navigation Menu]\n" + "\n".join(nav_lines) + "\n\n"
+
+    text = nav_text_block + text
+
     original_length = len(text)
     if original_length > max_text_length:
         text = text[:max_text_length] + f"\n\n[Content truncated. Total length: {original_length} characters]"
 
+    # Extract all regular links from the page
     links = []
     for anchor in soup.find_all("a", href=True):
-        href = anchor["href"]
-        if href.startswith("http"):
-            links.append({"text": anchor.get_text(strip=True), "url": href})
+        href = anchor["href"].strip()
+        anchor_text = anchor.get_text(strip=True)
+        if href and not href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            if base_url:
+                absolute_url = urllib.parse.urljoin(base_url, href)
+            else:
+                absolute_url = href
+            links.append({"text": anchor_text or absolute_url, "url": absolute_url})
 
-    return text, links[:20]
+    # Deduplicate regular links
+    seen_regular = set()
+    unique_links = []
+    for item in links:
+        if item["url"] not in seen_regular:
+            seen_regular.add(item["url"])
+            unique_links.append(item)
+            if len(unique_links) >= 20:
+                break
+
+    return text, unique_links, unique_navigation_links
 
 
 def clean_html(raw_html: str) -> str:
-    """Strips scripts, styles, nav, footer, header, aside, noscript elements and returns plain text with normalized whitespace."""
+    """Strips scripts, styles, noscript elements and returns plain text with normalized whitespace."""
     try:
         soup = BeautifulSoup(raw_html, "lxml")
     except Exception:
         soup = BeautifulSoup(raw_html, "html.parser")
 
-    for element in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+    for element in soup(["script", "style", "noscript"]):
         element.decompose()
 
     text = soup.get_text(separator="\n", strip=True)

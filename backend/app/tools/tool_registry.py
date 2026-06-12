@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable, Dict, List
 from app.tools.browser_tools import browse_web
 from app.tools.search_tools import search_web
 from app.tools.extraction_tools import extract_data
+from app.tools.navigation_tools import navigate_page
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,27 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                     "required": ["page_content", "fields"],
                 },
             },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "navigate_page",
+                "description": (
+                    "Statefully navigate to a new page or sub-page matching a specific intent. "
+                    "Use this tool to click links, open products, go to next pages, or click tabs "
+                    "on the website you are already browsing."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "intent": {
+                            "type": "string",
+                            "description": "The target navigation goal (e.g., 'click the first search result product', 'go to page 2', 'click on specifications tab')",
+                        },
+                    },
+                    "required": ["intent"],
+                },
+            },
         }
     ]
 
@@ -103,6 +125,7 @@ TOOL_REGISTRY: Dict[str, ToolHandler] = {
     "browse_web": browse_web,
     "search_web": search_web,
     "extract_data": extract_data,
+    "navigate_page": navigate_page,
 }
 
 

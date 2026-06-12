@@ -1,13 +1,18 @@
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, TypedDict
 
 from app.agents.prompts import WEB_AGENT_SYSTEM_PROMPT
 from app.services.llm_service import get_openai_client
 from app.config import settings
 from app.tools.tool_registry import execute_tool, get_tool_definitions
+from app.scraper.browser import browser_manager
 
 logger = logging.getLogger(__name__)
+
+
+class AgentState(TypedDict):
+    navigation_depth: int
 
 
 class AIAgent:
@@ -77,9 +82,10 @@ class AIAgent:
         last_tool_result = None
         last_raw_url = None
 
-        # Track tool calls to enforce search-to-browse
+        # Track tool calls to enforce search-to-browse and stateful depth limit
         search_web_called = False
         browse_web_succeeded = False
+        state = AgentState(navigation_depth=0)
 
         # Scan initial history to set tracking flags
         for msg in full_messages:
@@ -98,6 +104,11 @@ class AIAgent:
                     search_web_called = True
                 elif name == "browse_web" and is_success:
                     browse_web_succeeded = True
+                elif name == "navigate_page":
+                    state["navigation_depth"] += 1
+
+        # Sync depth with browser manager
+        browser_manager.navigation_depth = state["navigation_depth"]
 
         while step < max_steps:
             step += 1
@@ -223,6 +234,8 @@ class AIAgent:
                     search_web_called = True
                 elif tool_name == "browse_web" and is_success:
                     browse_web_succeeded = True
+                elif tool_name == "navigate_page" and is_success:
+                    state["navigation_depth"] += 1
 
                 tools_in_step.append(tool_name)
                 last_tool_used = ", ".join(tools_in_step)
