@@ -1,6 +1,7 @@
 import json
 import logging
 from typing import Any, Dict, List, TypedDict
+from datetime import datetime, timezone
 
 from app.agents.prompts import WEB_AGENT_SYSTEM_PROMPT
 from app.services.llm_service import get_openai_client
@@ -23,6 +24,12 @@ class AIAgent:
     async def chat(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Main chat loop. Handles tool calling automatically."""
         user_query = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        task_anchor = (
+            f"\n\nREMINDER OF ORIGINAL TASK: \"{user_query}\". "
+            f"You must answer THIS exact question. Do not substitute it with a different "
+            f"product, topic, or question. If the exact item cannot be found after a real "
+            f"web investigation, state that explicitly instead of answering something else."
+        )
         print(f"\n==================================================")
         print(f"🤖 AGENT CHAT SESSION STARTED")
         print(f"👉 User Query: {user_query}")
@@ -61,9 +68,19 @@ class AIAgent:
         except Exception as e:
             logger.error(f"Error in intent classification: {e}. Defaulting to requires_web = True")
             print(f"⚠️  [INTENT ROUTER] Error running classification: {e}. Defaulting to WEB_REQUIRED.")
-
+        
+        current_date = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
+        system_content = WEB_AGENT_SYSTEM_PROMPT + (
+                f"\n\n══════════════════════════════════════════════════\n"
+                f"TEMPORAL CONTEXT\n"
+                f"══════════════════════════════════════════════════\n\n"
+                f"Today's date is {current_date}. Your training data has a cutoff and is "
+                f"MONTHS OR YEARS OUT OF DATE relative to today. Products, events, and websites "
+                f"that did not exist in your training data may exist now. Live web page content "
+                f"reflects the present; your memory reflects the past."
+            )
         full_messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": WEB_AGENT_SYSTEM_PROMPT},
+            {"role": "system", "content": system_content},
             *messages,
         ]
 
@@ -115,7 +132,7 @@ class AIAgent:
                 messages=full_messages,
                 tools=self.tools,
                 tool_choice="auto" if step < max_steps else "none",
-                max_tokens=4000,
+                max_tokens=2000,
             )
 
             message = response.choices[0].message
@@ -125,16 +142,18 @@ class AIAgent:
                 print(message.content.strip())
                 print(f"--------------------------------------------------\n")
 
-            is_attempting_to_finish = (not message.tool_calls) or any(tc.function.name == "finish_task" for tc in message.tool_calls)
+            # Check if finish_task is being called
+            finish_call = None
+            if message.tool_calls:
+                finish_call = next((tc for tc in message.tool_calls if tc.function.name == "finish_task"), None)
 
-            if is_attempting_to_finish:
+            # If calling finish_task, run the enforcements
+            if finish_call and step < max_steps:
                 # Construct assistant message structure to append to history
                 assistant_msg = {
                     "role": "assistant",
-                    "content": message.content or ""
-                }
-                if message.tool_calls:
-                    assistant_msg["tool_calls"] = [
+                    "content": message.content or "",
+                    "tool_calls": [
                         {
                             "id": tc.id,
                             "type": "function",
@@ -145,135 +164,181 @@ class AIAgent:
                         }
                         for tc in message.tool_calls
                     ]
+                }
+                
+                try:
+                    args = json.loads(finish_call.function.arguments)
+                except Exception:
+                    args = {}
 
-                # Layer 3: Output verification - if requires_web is True and finish_task has empty/missing sources, reject it
-                if requires_web and message.tool_calls and step < max_steps:
-                    finish_call = next((tc for tc in message.tool_calls if tc.function.name == "finish_task"), None)
-                    if finish_call:
-                        try:
-                            args = json.loads(finish_call.function.arguments)
-                        except Exception:
-                            args = {}
-                        sources = args.get("sources")
-                        if not sources or not isinstance(sources, list) or len(sources) == 0:
-                            logger.warning("Agent tried to finish a web-required query without sources.")
-                            print("⚠️  [GUARDRAIL WARNING] Agent tried to finish web-required query without sources. Injecting correction...")
-                            warning_msg = {
-                                "role": "user",
-                                "content": (
-                                    "[SYSTEM CORRECTION] The user's query requires web search/browsing. "
-                                    "You cannot complete the task or call finish_task without listing the browsed source URLs in the 'sources' parameter. "
-                                    "Please browse the relevant pages and provide their URLs in the sources list when calling finish_task."
-                                )
-                            }
-                            full_messages.append(assistant_msg)
-                            new_messages.append(assistant_msg)
-                            full_messages.append(warning_msg)
-                            new_messages.append(warning_msg)
-                            continue
-
-                # 1. Check if the agent is trying to answer without calling any tools at all (when requires_web is True)
-                if requires_web and not search_web_called and not browse_web_succeeded and step < max_steps:
-                    logger.warning("Agent tried to finish without using any web tools for a web-required task. Forcing tool call.")
-                    print(f"⚠️  [GUARDRAIL WARNING] Agent attempted to finish directly without tools. Injecting correction system message...")
-                    warning_msg = {
-                        "role": "user",
-                        "content": (
-                            "[SYSTEM CORRECTION] You have attempted to finish or answer using your pre-training/internal knowledge without executing any tool. "
-                            "As a Web AI Agent, you are NOT allowed to answer from internal knowledge. You MUST use search_web "
-                            "or browse_web to gather real-time data first. "
-                            "Please execute your plan by calling the appropriate tool now."
-                        )
-                    }
-                    full_messages.append(assistant_msg)
-                    new_messages.append(assistant_msg)
-                    full_messages.append(warning_msg)
-                    new_messages.append(warning_msg)
-                    continue
-
-                # 2. Check if search was called but browse did not succeed (when requires_web is True)
-                if requires_web and search_web_called and not browse_web_succeeded and step < max_steps:
-                    logger.warning("Agent tried to finish without a successful browse_web. Forcing browse_web.")
-                    print(f"⚠️  [GUARDRAIL WARNING] Agent searched but tried to finish without successful browse. Injecting browse warning...")
-                    warning_msg = {
-                        "role": "user",
-                        "content": (
-                            "[SYSTEM CORRECTION] You have only searched the web or had failed browse attempts, but have not successfully browsed and read the actual "
-                            "webpages. Snippets from search_web are incomplete and not acceptable as a final answer. "
-                            "You MUST call browse_web on the relevant URL discovered to read the full page details "
-                            "before writing your final response."
-                        )
-                    }
-                    full_messages.append(assistant_msg)
-                    new_messages.append(assistant_msg)
-                    full_messages.append(warning_msg)
-                    new_messages.append(warning_msg)
-                    continue
-
-                # 3. Check if extract_data was not called but we have browsed a page successfully (when requires_web is True)
-                if requires_web and not extract_data_called and browse_web_succeeded and step < max_steps:
-                    logger.warning("Agent tried to finish without calling extract_data. Forcing extract_data.")
-                    print(f"⚠️  [GUARDRAIL WARNING] Agent tried to finish without calling extract_data. Injecting extract_data warning...")
-                    warning_msg = {
-                        "role": "user",
-                        "content": (
-                            "[SYSTEM CORRECTION] You have browsed a webpage but have not executed extract_data to extract the structured information yet. "
-                            "You must call extract_data(page_content, fields) to pull the specific facts, specs, or details requested before formulating a final answer. "
-                            "Please execute the extract_data tool now."
-                        )
-                    }
-                    full_messages.append(assistant_msg)
-                    new_messages.append(assistant_msg)
-                    full_messages.append(warning_msg)
-                    new_messages.append(warning_msg)
-                    continue
-
-                # 4. If there are no tool calls, handle plain text responses (reasoning messages)
-                if not message.tool_calls:
-                    final_content = message.content or ""
-                    
-                    # Layer 2: Accept plain-text direct replies for non-web tasks immediately as final response!
-                    if not requires_web:
-                        print(f"🏁 [AGENT RESPONSE] Plain text accepted as final response.")
-                        return {
-                            "response": final_content,
-                            "tool_used": "plain_text",
-                            "tool_result": None,
-                            "raw_url": None,
-                            "new_messages": new_messages + [assistant_msg],
-                        }
-                    
-                    if not final_content.strip():
-                        logger.warning("Agent returned an empty response. Injecting recovery prompt.")
-                        print("⚠️  [GUARDRAIL WARNING] Agent returned an empty response. Injecting recovery prompt...")
-                        recovery_msg = {
+                # Guardrails for web-required queries
+                if requires_web:
+                    # 1. Sources check
+                    sources = args.get("sources")
+                    if not sources or not isinstance(sources, list) or len(sources) == 0:
+                        logger.warning("Agent tried to finish a web-required query without sources.")
+                        print("⚠️  [GUARDRAIL WARNING] Agent tried to finish web-required query without sources. Injecting correction...")
+                        warning_msg = {
                             "role": "user",
                             "content": (
-                                "[SYSTEM CORRECTION] Your previous response was empty. You must either continue the task by calling "
-                                "tools, or if you have all the information, output the final factual answer using finish_task(answer). "
-                                "Do not leave the response blank."
+                                "[SYSTEM CORRECTION] The user's query requires web search/browsing. "
+                                "You cannot complete the task or call finish_task without listing the browsed source URLs in the 'sources' parameter. "
+                                "Please browse the relevant pages and provide their URLs in the sources list when calling finish_task."
+                                + task_anchor
                             )
                         }
                         full_messages.append(assistant_msg)
                         new_messages.append(assistant_msg)
-                        full_messages.append(recovery_msg)
-                        new_messages.append(recovery_msg)
+                        full_messages.append(warning_msg)
+                        new_messages.append(warning_msg)
                         continue
 
-                    logger.info("Agent provided mid-task reasoning without tool calls. Nudging agent to continue.")
-                    print("💬 [AGENT STATE] Mid-task reasoning or planning emitted without a tool call. Injecting nudge...")
-                    
-                    nudge_msg = {
+                    # 2. No-tools check (did not search and did not browse)
+                    if not search_web_called and not browse_web_succeeded:
+                        logger.warning("Agent tried to finish without using any web tools for a web-required task. Forcing tool call.")
+                        print(f"⚠️  [GUARDRAIL WARNING] Agent attempted to finish directly without tools. Injecting correction system message...")
+                        warning_msg = {
+                            "role": "user",
+                            "content": (
+                                "[SYSTEM CORRECTION] You have attempted to finish or answer using your pre-training/internal knowledge without executing any tool. "
+                                "As a Web AI Agent, you are NOT allowed to answer from internal knowledge. You MUST use search_web "
+                                "or browse_web to gather real-time data first. "
+                                "Please execute your plan by calling the appropriate tool now."
+                                + task_anchor
+                            )
+                        }
+                        full_messages.append(assistant_msg)
+                        new_messages.append(assistant_msg)
+                        full_messages.append(warning_msg)
+                        new_messages.append(warning_msg)
+                        continue
+
+                    # 3. Browse check (searched but did not browse)
+                    if search_web_called and not browse_web_succeeded:
+                        logger.warning("Agent tried to finish without a successful browse_web. Forcing browse_web.")
+                        print(f"⚠️  [GUARDRAIL WARNING] Agent searched but tried to finish without successful browse. Injecting browse warning...")
+                        warning_msg = {
+                            "role": "user",
+                            "content": (
+                                "[SYSTEM CORRECTION] You have only searched the web or had failed browse attempts, but have not successfully browsed and read the actual "
+                                "webpages. Snippets from search_web are incomplete and not acceptable as a final answer. "
+                                "You MUST call browse_web on the relevant URL discovered to read the full page details "
+                                "before writing your final response."
+                                + task_anchor
+                            )
+                        }
+                        full_messages.append(assistant_msg)
+                        new_messages.append(assistant_msg)
+                        full_messages.append(warning_msg)
+                        new_messages.append(warning_msg)
+                        continue
+
+                    # 4. Extract check (browsed but did not extract)
+                    if browse_web_succeeded and not extract_data_called:
+                        logger.warning("Agent tried to finish without calling extract_data. Forcing extract_data.")
+                        print(f"⚠️  [GUARDRAIL WARNING] Agent tried to finish without calling extract_data. Injecting extract_data warning...")
+                        warning_msg = {
+                            "role": "user",
+                            "content": (
+                                "[SYSTEM CORRECTION] You have browsed a webpage but have not executed extract_data to extract the structured information yet. "
+                                "You must call extract_data(page_content, fields) to pull the specific facts, specs, or details requested before formulating a final answer. "
+                                "Please execute the extract_data tool now."
+                                + task_anchor
+                            )
+                        }
+                        full_messages.append(assistant_msg)
+                        new_messages.append(assistant_msg)
+                        full_messages.append(warning_msg)
+                        new_messages.append(warning_msg)
+                        continue
+
+                # 5. Relevance check on finish_task
+                verdict_resp = await client.chat.completions.create(
+                    model=self.model,
+                    messages=[{
                         "role": "user",
                         "content": (
-                            "[SYSTEM NOTICE] You did not call a tool. If you have completed the user's request, or the request needs no research, call finish_task with your reply. Otherwise continue your plan."
+                            f"Original question: \"{user_query}\"\n"
+                            f"Proposed answer: \"{args.get('answer','')}\"\n\n"
+                            "Does the proposed answer address the subject of the original question (rather than substituting it with a different product, topic, or question)? Explain your reasoning, and then reply with YES or NO."
+                        )
+                    }],
+                    max_tokens=150,
+                    temperature=0.0,
+                )
+                verdict_raw = verdict_resp.choices[0].message.content.strip()
+                verdict = verdict_raw.upper()
+                print(f"🕵️  [RELEVANCE CHECK] Verdict: '{verdict_raw}' for answer: '{args.get('answer','')[:60]}...'")
+                if "YES" not in verdict:
+                    logger.warning(f"Relevance check failed: {verdict}. Agent's proposed answer does not address the exact subject.")
+                    print("⚠️  [GUARDRAIL WARNING] Agent's proposed answer does not address the exact subject. Injecting correction...")
+                    warning_msg = {
+                        "role": "user",
+                        "content": (
+                            "[SYSTEM CORRECTION] Your proposed answer does not address the EXACT subject of the original question. "
+                            "You must answer the exact question asked. Do not substitute the product, topic, or question. "
+                            "Please gather the correct information for the original task or explicitly state if it cannot be found."
+                            + task_anchor
                         )
                     }
                     full_messages.append(assistant_msg)
-                    full_messages.append(nudge_msg)
                     new_messages.append(assistant_msg)
-                    new_messages.append(nudge_msg)
+                    full_messages.append(warning_msg)
+                    new_messages.append(warning_msg)
                     continue
+
+            # If there are no tool calls, handle plain text responses
+            if not message.tool_calls:
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": message.content or ""
+                }
+                final_content = message.content or ""
+                
+                # Layer 2: Accept plain-text direct replies for non-web tasks immediately as final response!
+                if not requires_web:
+                    print(f"🏁 [AGENT RESPONSE] Plain text accepted as final response.")
+                    return {
+                        "response": final_content,
+                        "tool_used": "plain_text",
+                        "tool_result": None,
+                        "raw_url": None,
+                        "new_messages": new_messages + [assistant_msg],
+                    }
+                
+                if not final_content.strip():
+                    logger.warning("Agent returned an empty response. Injecting recovery prompt.")
+                    print("⚠️  [GUARDRAIL WARNING] Agent returned an empty response. Injecting recovery prompt...")
+                    recovery_msg = {
+                        "role": "user",
+                        "content": (
+                            "[SYSTEM CORRECTION] Your previous response was empty. You must either continue the task by calling "
+                            "tools, or if you have all the information, output the final factual answer using finish_task(answer). "
+                            "Do not leave the response blank."
+                            + task_anchor
+                        )
+                    }
+                    full_messages.append(assistant_msg)
+                    new_messages.append(assistant_msg)
+                    full_messages.append(recovery_msg)
+                    new_messages.append(recovery_msg)
+                    continue
+
+                logger.info("Agent provided mid-task reasoning without tool calls. Nudging agent to continue.")
+                print("💬 [AGENT STATE] Mid-task reasoning or planning emitted without a tool call. Injecting nudge...")
+                
+                nudge_msg = {
+                    "role": "user",
+                    "content": (
+                        "[SYSTEM NOTICE] You did not call a tool. If you have completed the user's request, or the request needs no research, call finish_task with your reply. Otherwise continue your plan."
+                        + task_anchor
+                    )
+                }
+                full_messages.append(assistant_msg)
+                full_messages.append(nudge_msg)
+                new_messages.append(assistant_msg)
+                new_messages.append(nudge_msg)
+                continue
 
             logger.info(f"LLM requested {len(message.tool_calls)} tool call(s) at step {step}")
             print(f"🛠️  [TOOL CALL REQUEST] LLM requested {len(message.tool_calls)} tool call(s) at step {step}")
