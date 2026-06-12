@@ -20,64 +20,6 @@ class AIAgent:
         self.model = settings.openrouter_model
         self.tools = get_tool_definitions()
 
-    def _needs_browse_enforcement(self, messages: List[Dict[str, Any]]) -> bool:
-        user_query = ""
-        for msg in messages:
-            if msg.get("role") == "user":
-                user_query = msg.get("content", "").lower()
-                break
-
-        if not user_query:
-            return True
-
-        simple_qa_triggers = [
-            "what year", "when was", "who created", "who is", "who founded",
-            "who wrote", "what is the capital", "when did", "how old", "where is",
-            "what is the definition", "define "
-        ]
-        has_simple_qa_trigger = any(trigger in user_query for trigger in simple_qa_triggers)
-
-        browse_keywords = [
-            "scrape", "browse", "extract", "visit", "go to", "url", "link", ".com", ".org", ".net", ".io", "http",
-            "repositories", "projects", "pricing", "list of", "compare", "features", "details", "full text", "articles", "github"
-        ]
-        has_browse_keyword = any(kw in user_query for kw in browse_keywords)
-
-        if has_simple_qa_trigger and not has_browse_keyword:
-            return False
-
-        return True
-
-    def _is_greeting(self, messages: List[Dict[str, Any]]) -> bool:
-        user_query = ""
-        for msg in messages:
-            if msg.get("role") == "user":
-                user_query = msg.get("content", "").strip().lower()
-                break
-        if not user_query:
-            return True
-        
-        import re
-        clean_query = re.sub(r'[^\w\s]', '', user_query).strip()
-        
-        # Define conversational/greeting words/phrases
-        greeting_words = {"hi", "hello", "hey", "hola", "yo", "greetings", "good morning", "good afternoon", "good evening", "howdy"}
-        about_ai_phrases = {"who are you", "what is your name", "how are you", "what can you do", "introduce yourself", "tell me about yourself"}
-        
-        # Direct phrase match
-        if any(phrase in clean_query for phrase in about_ai_phrases):
-            return True
-            
-        # Check if the query is a greeting or contains greeting words
-        words = clean_query.split()
-        if any(w in greeting_words for w in words):
-            # If it contains a greeting, let's make sure it doesn't also look like a web request
-            web_indicators = {"scrape", "browse", "visit", "go to", "url", "link", "http", "search", "website"}
-            if not any(indicator in clean_query for indicator in web_indicators):
-                return True
-                
-        return False
-
     async def chat(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Main chat loop. Handles tool calling automatically."""
         user_query = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
@@ -88,6 +30,38 @@ class AIAgent:
         logger.info(f"Starting chat session with {len(messages)} input messages")
         
         client = get_openai_client()
+
+        # Layer 1: Intent router (cheap, fast, deterministic classification)
+        requires_web = True
+        try:
+            router_prompt = (
+                "You are a fast, precise classifier that decides if a user request requires web search/browsing.\n"
+                "Classify the latest user query with conversation context into exactly one of these categories:\n"
+                "CONVERSATIONAL - greetings, thank you, identity/capabilities, or general chitchat (e.g. 'hello', 'who are you', 'thanks').\n"
+                "STATIC_KNOWLEDGE - timeless general knowledge, coding questions, algorithms, math, grammar, or definitions (e.g. 'what is recursion', 'write quicksort in python', 'define photosynthesis'). Internal knowledge is fine.\n"
+                "WEB_REQUIRED - anything needing current state of the world, prices, availability, news, release dates, profiles, specific URLs/websites, or time-sensitive data (e.g. 'price of gold', 'weather today', 'latest news', 'list repositories of user X').\n\n"
+                "Response: Return ONLY the single word classification (CONVERSATIONAL, STATIC_KNOWLEDGE, or WEB_REQUIRED). Do not explain."
+            )
+            router_history = [{"role": "system", "content": router_prompt}]
+            for msg in messages:
+                if msg.get("role") in ("user", "assistant"):
+                    router_history.append({"role": msg["role"], "content": msg["content"]})
+            
+            router_response = await client.chat.completions.create(
+                model=self.model,
+                messages=router_history,
+                max_tokens=15,
+                temperature=0.0,
+            )
+            classification = router_response.choices[0].message.content.strip().upper()
+            logger.info(f"Intent classification result: {classification}")
+            print(f"🎯 [INTENT ROUTER] Query classified as: {classification}")
+            if "CONVERSATIONAL" in classification or "STATIC_KNOWLEDGE" in classification:
+                requires_web = False
+        except Exception as e:
+            logger.error(f"Error in intent classification: {e}. Defaulting to requires_web = True")
+            print(f"⚠️  [INTENT ROUTER] Error running classification: {e}. Defaulting to WEB_REQUIRED.")
+
         full_messages: List[Dict[str, Any]] = [
             {"role": "system", "content": WEB_AGENT_SYSTEM_PROMPT},
             *messages,
@@ -172,9 +146,35 @@ class AIAgent:
                         for tc in message.tool_calls
                     ]
 
-                # 1. Check if the agent is trying to answer without calling any tools at all (unless it's a simple greeting)
-                if not search_web_called and not browse_web_succeeded and not self._is_greeting(messages) and step < max_steps:
-                    logger.warning("Agent tried to finish without using any web tools. Forcing tool call.")
+                # Layer 3: Output verification - if requires_web is True and finish_task has empty/missing sources, reject it
+                if requires_web and message.tool_calls and step < max_steps:
+                    finish_call = next((tc for tc in message.tool_calls if tc.function.name == "finish_task"), None)
+                    if finish_call:
+                        try:
+                            args = json.loads(finish_call.function.arguments)
+                        except Exception:
+                            args = {}
+                        sources = args.get("sources")
+                        if not sources or not isinstance(sources, list) or len(sources) == 0:
+                            logger.warning("Agent tried to finish a web-required query without sources.")
+                            print("⚠️  [GUARDRAIL WARNING] Agent tried to finish web-required query without sources. Injecting correction...")
+                            warning_msg = {
+                                "role": "user",
+                                "content": (
+                                    "[SYSTEM CORRECTION] The user's query requires web search/browsing. "
+                                    "You cannot complete the task or call finish_task without listing the browsed source URLs in the 'sources' parameter. "
+                                    "Please browse the relevant pages and provide their URLs in the sources list when calling finish_task."
+                                )
+                            }
+                            full_messages.append(assistant_msg)
+                            new_messages.append(assistant_msg)
+                            full_messages.append(warning_msg)
+                            new_messages.append(warning_msg)
+                            continue
+
+                # 1. Check if the agent is trying to answer without calling any tools at all (when requires_web is True)
+                if requires_web and not search_web_called and not browse_web_succeeded and step < max_steps:
+                    logger.warning("Agent tried to finish without using any web tools for a web-required task. Forcing tool call.")
                     print(f"⚠️  [GUARDRAIL WARNING] Agent attempted to finish directly without tools. Injecting correction system message...")
                     warning_msg = {
                         "role": "user",
@@ -191,8 +191,8 @@ class AIAgent:
                     new_messages.append(warning_msg)
                     continue
 
-                # 2. Check if search was called but browse did not succeed
-                if self._needs_browse_enforcement(messages) and search_web_called and not browse_web_succeeded and step < max_steps:
+                # 2. Check if search was called but browse did not succeed (when requires_web is True)
+                if requires_web and search_web_called and not browse_web_succeeded and step < max_steps:
                     logger.warning("Agent tried to finish without a successful browse_web. Forcing browse_web.")
                     print(f"⚠️  [GUARDRAIL WARNING] Agent searched but tried to finish without successful browse. Injecting browse warning...")
                     warning_msg = {
@@ -210,8 +210,8 @@ class AIAgent:
                     new_messages.append(warning_msg)
                     continue
 
-                # 3. Check if extract_data was not called but we have browsed a page successfully
-                if not extract_data_called and browse_web_succeeded and not self._is_greeting(messages) and step < max_steps:
+                # 3. Check if extract_data was not called but we have browsed a page successfully (when requires_web is True)
+                if requires_web and not extract_data_called and browse_web_succeeded and step < max_steps:
                     logger.warning("Agent tried to finish without calling extract_data. Forcing extract_data.")
                     print(f"⚠️  [GUARDRAIL WARNING] Agent tried to finish without calling extract_data. Injecting extract_data warning...")
                     warning_msg = {
@@ -231,6 +231,18 @@ class AIAgent:
                 # 4. If there are no tool calls, handle plain text responses (reasoning messages)
                 if not message.tool_calls:
                     final_content = message.content or ""
+                    
+                    # Layer 2: Accept plain-text direct replies for non-web tasks immediately as final response!
+                    if not requires_web:
+                        print(f"🏁 [AGENT RESPONSE] Plain text accepted as final response.")
+                        return {
+                            "response": final_content,
+                            "tool_used": "plain_text",
+                            "tool_result": None,
+                            "raw_url": None,
+                            "new_messages": new_messages + [assistant_msg],
+                        }
+                    
                     if not final_content.strip():
                         logger.warning("Agent returned an empty response. Injecting recovery prompt.")
                         print("⚠️  [GUARDRAIL WARNING] Agent returned an empty response. Injecting recovery prompt...")
@@ -254,8 +266,7 @@ class AIAgent:
                     nudge_msg = {
                         "role": "user",
                         "content": (
-                            "[SYSTEM NOTICE] You did not call a tool. If the task is complete, you MUST call finish_task(answer) to end. "
-                            "Otherwise, continue with the next tool call (such as search_web, browse_web, navigate_page, or extract_data)."
+                            "[SYSTEM NOTICE] You did not call a tool. If you have completed the user's request, or the request needs no research, call finish_task with your reply. Otherwise continue your plan."
                         )
                     }
                     full_messages.append(assistant_msg)

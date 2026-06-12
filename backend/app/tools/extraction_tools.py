@@ -57,13 +57,7 @@ def extract_clean_content(
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     text = "\n".join(lines)
 
-    # 3. Prepend navigation menu text block to the content so it is never stripped from the agent's view
-    nav_text_block = ""
-    if unique_navigation_links:
-        nav_lines = [f"- {item['text']}: {item['url']}" for item in unique_navigation_links]
-        nav_text_block = "[Navigation Menu]\n" + "\n".join(nav_lines) + "\n\n"
-
-    text = nav_text_block + text
+    # 3. Navigation links are not prepended to save budget; they are returned in separate structured data.
 
     original_length = len(text)
     if original_length > max_text_length:

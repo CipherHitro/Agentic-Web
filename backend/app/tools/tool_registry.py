@@ -134,7 +134,14 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                     "properties": {
                         "answer": {
                             "type": "string",
-                            "description": "The final complete and detailed answer to the user's query, including source URLs.",
+                            "description": "The final complete and detailed answer to the user's query.",
+                        },
+                        "sources": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "The list of absolute source URLs (e.g. websites browsed) used to gather information for this answer. Mandatory if the task required web lookup.",
                         },
                     },
                     "required": ["answer"],
