@@ -312,9 +312,13 @@ class AIAgent:
                     recovery_msg = {
                         "role": "user",
                         "content": (
-                            "[SYSTEM CORRECTION] Your previous response was empty. You must either continue the task by calling "
-                            "tools, or if you have all the information, output the final factual answer using finish_task(answer). "
-                            "Do not leave the response blank."
+                            "[SYSTEM CORRECTION] Your response was empty. This is a critical failure.\n\n"
+                            "You have already browsed a webpage. The page content is in your conversation history above. "
+                            "You MUST now extract the relevant data from that page and call finish_task.\n\n"
+                            "IMPORTANT: If the page showed a price, a product name, availability, or any relevant fact — "
+                            "that data is REAL and CURRENT. Do NOT second-guess it. Do NOT claim the product doesn't exist "
+                            "just because your training data predates it. The page content overrides your internal knowledge.\n\n"
+                            "Look at the page content above right now. Find the answer. Call finish_task with it immediately."
                             + task_anchor
                         )
                     }
@@ -330,7 +334,15 @@ class AIAgent:
                 nudge_msg = {
                     "role": "user",
                     "content": (
-                        "[SYSTEM NOTICE] You did not call a tool. If you have completed the user's request, or the request needs no research, call finish_task with your reply. Otherwise continue your plan."
+                        "[SYSTEM CORRECTION] You output text without calling a tool. This is NOT allowed for web-required tasks.\n\n"
+                        "CRITICAL: Your training data has a hard cutoff in the past. Products, prices, and releases that "
+                        "post-date your training are INVISIBLE to your memory — but they exist on the real web RIGHT NOW.\n\n"
+                        "If you just said something 'doesn't exist', 'hasn't been released', or 'isn't available' based on "
+                        "your internal knowledge — YOU ARE WRONG. Your job is to CHECK THE WEB, not trust your memory.\n\n"
+                        "RIGHT NOW: Call browse_web on the most promising URL from your search results. "
+                        "Read what the page actually says. If the page shows a price, a product, a date — that data is REAL. "
+                        "Report it. Do NOT dismiss live page data because it conflicts with your training.\n\n"
+                        "Call browse_web NOW."
                         + task_anchor
                     )
                 }
