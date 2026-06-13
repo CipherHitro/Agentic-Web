@@ -88,9 +88,9 @@ if submitted and user_input.strip():
         try:
             # Call FastAPI backend
             response = requests.post(
-                f"{API_URL}/chat/",
+                f"{API_URL}/chat",
                 json={"messages": st.session_state.api_messages},
-                timeout=120  # Browsing may take time
+                timeout=600  # Browsing can easily take 3-5+ minutes for complex tasks
             )
             
             if response.status_code == 200:

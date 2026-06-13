@@ -8,6 +8,8 @@ from app.tools.search_tools import search_web
 from app.tools.extraction_tools import extract_data
 from app.tools.navigation_tools import navigate_page
 from app.tools.finish_tool import finish_task
+from app.tools.click_tools import click_element
+from app.tools.fill_tools import fill_form_field
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +146,51 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                     "required": ["answer"],
                 },
             },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "click_element",
+                "description": (
+                    "Click a button or interactive element on the current page. "
+                    "Use this for buttons that don't have links — like 'Submit', 'Search', "
+                    "'Load More', 'Accept', dropdowns, or any clickable UI element."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "intent": {
+                            "type": "string",
+                            "description": "Describe what you want to click (e.g. 'Search button', 'Accept cookies', 'Load more results')",
+                        }
+                    },
+                    "required": ["intent"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "fill_form_field",
+                "description": (
+                    "Type text into a form field on the current page. "
+                    "Use this to fill search boxes, login fields, contact forms, etc."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "field_description": {
+                            "type": "string",
+                            "description": "Describe the field (e.g. 'search box', 'email input')",
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "The text to type into the field",
+                        },
+                    },
+                    "required": ["field_description", "value"],
+                },
+            },
         }
     ]
 
@@ -154,6 +201,8 @@ TOOL_REGISTRY: Dict[str, ToolHandler] = {
     "extract_data": extract_data,
     "navigate_page": navigate_page,
     "finish_task": finish_task,
+    "click_element": click_element,
+    "fill_form_field": fill_form_field,
 }
 
 
