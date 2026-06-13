@@ -334,12 +334,25 @@ def html_extract(raw_html: str, fields: List[str]) -> Dict[str, Any]:
     return results
 
 
-async def extract_data(page_content: str, fields: List[str]) -> Dict[str, Any]:
+async def extract_data(fields: List[str], page_content: str = None) -> Dict[str, Any]:
     """
     Extract specific fields from webpage content using a two-pass strategy:
     1. HTML parsing pass (meta tags, tables, headings, class matching) -> high confidence.
     2. LLM pass (for unstructured or complex content) -> medium confidence.
     """
+    if not page_content:
+        from app.scraper.browser import browser_manager
+        page = browser_manager.current_page
+        if not page or page.is_closed():
+            return {
+                "success": False,
+                "error": "No active browser session. You must call 'browse_web' before extracting."
+            }
+        try:
+            page_content = await page.content()
+        except Exception as e:
+            return {"success": False, "error": f"Failed to get page content: {e}"}
+
     cleaned_text = clean_html(page_content)
     html_results = html_extract(page_content, fields)
 

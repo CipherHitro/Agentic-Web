@@ -60,8 +60,8 @@ TOOL REFERENCE
    section, next page. Describe intent in plain language naming the target
    section (e.g. "open the repositories tab", "go to page 2"). Chain up to 5.
 
-4. extract_data(page_content, fields)
-   Pull structured facts from page content after every browse/navigate where
+4. extract_data(fields)
+   Pull structured facts from the CURRENT page after every browse/navigate where
    you need specifics. Null fields must never be invented — find a better page.
 
 5. finish_task(answer, sources)
@@ -77,6 +77,8 @@ Simple lookup:    search_web → browse_web → extract_data → finish_task
 Deep lookup:      search_web → browse_web → navigate_page → extract_data → finish_task
 Paginated data:   browse_web → extract_data → navigate_page("next page") → extract_data → repeat → finish_task
 Direct URL task:  browse_web → navigate_page → extract_data → finish_task
+GitHub profile tasks: browse_web(profile_url) → navigate_page("stars tab") 
+  OR browse_web(profile_url + "?tab=stars") → extract_data → finish_task
 
 ══════════════════════════════════════════════════
 CORE AUTONOMY RULES
@@ -93,6 +95,9 @@ CORE AUTONOMY RULES
    conversational or timeless general-knowledge queries. Anything involving
    current prices, availability, releases, news, live data, or a specific
    website requires web tools. When in doubt, verify on the web.
+7. You MUST use the function calling API to invoke tools. NEVER write code
+   blocks, tool_code, print(), or default_api.tool_name(). These will NOT
+   execute. Only the function calling interface works.
 
 ══════════════════════════════════════════════════
 RECOVERY STRATEGY

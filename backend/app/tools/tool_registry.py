@@ -82,10 +82,6 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "page_content": {
-                            "type": "string",
-                            "description": "The raw HTML or text content of the page to extract from",
-                        },
                         "fields": {
                             "type": "array",
                             "items": {
@@ -94,7 +90,7 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                             "description": "The list of field names/descriptions to extract (e.g. ['price', 'product name'])",
                         },
                     },
-                    "required": ["page_content", "fields"],
+                    "required": ["fields"],
                 },
             },
         },
@@ -104,8 +100,9 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                 "name": "navigate_page",
                 "description": (
                     "Statefully navigate to a new page or sub-page matching a specific intent. "
-                    "Use this tool to click links, open products, go to next pages, or click tabs "
-                    "on the website you are already browsing."
+                    "Use this tool to click links, open products, go to next pages, or click tabs. "
+                    "IMPORTANT: For GitHub profiles, use intent like 'go to stars tab' or "
+                    "'navigate to ?tab=stars'. Tab links often use URL query parameters."
                 ),
                 "parameters": {
                     "type": "object",
@@ -161,20 +158,10 @@ TOOL_REGISTRY: Dict[str, ToolHandler] = {
 
 
 async def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    # Truncate large string values in arguments for cleaner logging
-    logged_args = {}
-    for k, v in arguments.items():
-        if isinstance(v, str) and len(v) > 200:
-            logged_args[k] = v[:200] + f"... [Truncated, total {len(v)} characters]"
-        else:
-            logged_args[k] = v
-
-    print(f"\n>>> [AI TOOL EXECUTION] Tool: '{name}' | Args: {logged_args}")
-    logger.info(f"Executing tool {name} with arguments {logged_args}")
+    """Execute a registered tool by name with the given arguments."""
     try:
         handler = TOOL_REGISTRY[name]
     except KeyError as exc:
-        print(f"!!! [AI TOOL ERROR] Unknown tool: '{name}'")
         logger.error(f"Unknown tool: {name}")
         raise ValueError(f"Unknown tool: {name}") from exc
 
@@ -194,15 +181,12 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     for attempt in range(1, retries + 1):
         try:
             result = await handler(**valid_args)
-            print(f"<<< [AI TOOL COMPLETED] Tool: '{name}' | Success\n")
-            logger.info(f"Tool {name} completed successfully")
             return result
         except Exception as e:
-            print(f"!!! [AI TOOL ERROR] Tool: '{name}' attempt {attempt} failed: {e}")
             logger.warning(f"Tool {name} attempt {attempt} failed: {e}")
             if attempt < retries:
                 await asyncio.sleep(1.0)
             else:
-                print(f"!!! [AI TOOL ERROR] Tool: '{name}' failed after {retries} attempts: {e}\n")
                 logger.error(f"Tool {name} failed after {retries} attempts: {e}")
                 return {"success": False, "error": str(e)}
+
