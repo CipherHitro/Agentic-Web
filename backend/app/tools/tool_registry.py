@@ -16,6 +16,7 @@ from app.tools.scroll_tools import scroll
 from app.tools.screenshot_tools import take_screenshot
 from app.tools.human_tools import request_human_input
 from app.tools.observe_tools import observe_page
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ ToolHandler = Callable[..., Awaitable[Dict[str, Any]]]
 
 
 def get_tool_definitions() -> List[Dict[str, Any]]:
-    return [
+    tools = [
         # ── 1. search_web ──────────────────────────────────────────────────────
         {
             "type": "function",
@@ -445,6 +446,20 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
             },
         },
     ]
+
+    if not settings.human_involvement_enabled:
+        for tool in tools:
+            if tool.get("function", {}).get("name") == "request_human_input":
+                tool["function"]["description"] = (
+                    "DISABLED IN PRODUCTION. Do NOT call this tool — it will always fail. "
+                    "The browser runs headless on a remote server; the user cannot log in, "
+                    "solve CAPTCHAs, or interact with the browser. If authentication is required, "
+                    "call finish_task and explain that interactive sign-in is not supported in "
+                    "production. Use only public, unauthenticated pages."
+                )
+                break
+
+    return tools
 
 
 # ── Tool registry ──────────────────────────────────────────────────────────────

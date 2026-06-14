@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 # Load environment variables from backend/.env
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
+from app.config import settings
 from app.scraper.browser import browser_manager
 from app.api.routes import router as api_router
 
@@ -24,16 +25,17 @@ logging.getLogger("uvicorn.access").addFilter(_SuppressHumanStatusLogFilter())
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Validate settings
-    from app.config import settings
     if not settings.openrouter_api_key:
         raise ValueError(
             "OPENROUTER_API_KEY is not configured. Please set it in your environment or backend/.env file."
         )
-    # Startup: Launch browser using the settings/env configuration
+    print(
+        f"🚀 MODE={settings.mode} | "
+        f"browser_headed={settings.playwright_headed} | "
+        f"human_handoff={settings.human_involvement_enabled}"
+    )
     await browser_manager.start()
     yield
-    # Shutdown
     await browser_manager.close()
 
 app = FastAPI(
@@ -56,4 +58,9 @@ app.include_router(api_router)
 
 @app.get("/")
 async def root():
-    return {"status": "Agentic Web AI is running", "browser": "connected"}
+    return {
+        "status": "Agentic Web AI is running",
+        "mode": settings.mode,
+        "browser_headed": settings.playwright_headed,
+        "human_handoff": settings.human_involvement_enabled,
+    }

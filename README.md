@@ -110,7 +110,7 @@ The frontend runs at `http://localhost:8501` (must match `FRONTEND_URL` in `.env
 | `OPENROUTER_MODEL` | No | `google/gemini-2.5-flash-lite` | LLM used for agent reasoning |
 | `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api/v1` | OpenRouter endpoint |
 | `TAVILY_API_KEY` | No | — | Enables Tavily search (DuckDuckGo used otherwise) |
-| `PLAYWRIGHT_HEADED` | No | `false` | `true` shows the live browser window — great for demos |
+| `MODE` | No | `development` | `development` = headed browser + human handoff for login/MFA. `production` = headless + no handoff (use on Render) |
 | `FRONTEND_URL` | No | `http://localhost:8501` | Used for CORS / referer headers |
 | `APP_TITLE` | No | `Agentic Web AI` | App title sent to OpenRouter |
 | `SAVE_SCREENSHOTS_LOCAL` | No | `false` | Save debug screenshots to `backend/screenshots/` |
@@ -119,11 +119,12 @@ The frontend runs at `http://localhost:8501` (must match `FRONTEND_URL` in `.env
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/health` | Health check |
+| `GET` | `/health` | Health check (includes `mode`) |
+| `GET` | `/config` | Deployment config (`mode`, `human_involvement_enabled`, `playwright_headed`) |
 | `POST` | `/chat` | Main agent endpoint — send conversation, get the agent's response, tools used, and sources |
 | `POST` | `/scrape/` | Direct page scrape (bypasses the agent — useful for testing) |
-| `GET` | `/human/status` | Check if the agent is waiting on a human (login / CAPTCHA) |
-| `POST` | `/human/response` | Submit a human response to unblock the agent |
+| `GET` | `/human/status` | Check if the agent is waiting on a human (development only) |
+| `POST` | `/human/response` | Submit a human response to unblock the agent (development only) |
 
 ## 🛠️ The 15 Tools
 
