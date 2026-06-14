@@ -188,6 +188,8 @@ class AIAgent:
         last_tool_used = None
         last_tool_result = None
         last_raw_url = None
+        all_tools_used = []
+        steps_list = []
 
         # ── Tracking flags (isolated to current query) ────────────────
         search_web_called = False
@@ -531,6 +533,8 @@ class AIAgent:
                         form_panel_open = False
 
                 tools_in_step.append(tool_name)
+                all_tools_used.append(tool_name)
+                steps_list.append({"tool": tool_name, "success": is_success})
                 last_tool_used = ", ".join(tools_in_step)
                 last_tool_result = tool_result
                 last_raw_url = (
@@ -576,10 +580,11 @@ class AIAgent:
                 print(f"{'=' * 50}\n")
                 return {
                     "response": final_answer,
-                    "tool_used": last_tool_used,
+                    "tool_used": ", ".join(dict.fromkeys(all_tools_used)) if all_tools_used else "None",
                     "tool_result": last_tool_result,
                     "raw_url": last_raw_url,
                     "new_messages": new_messages,
+                    "steps": steps_list,
                 }
 
             # ── Observe-only loop detection ─────────────────────────────
@@ -729,10 +734,11 @@ class AIAgent:
         new_messages.append({"role": "assistant", "content": fallback_content})
         return {
             "response": fallback_content,
-            "tool_used": last_tool_used,
+            "tool_used": ", ".join(dict.fromkeys(all_tools_used)) if all_tools_used else "None",
             "tool_result": last_tool_result,
             "raw_url": last_raw_url,
             "new_messages": new_messages,
+            "steps": steps_list,
         }
 
 

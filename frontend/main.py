@@ -145,12 +145,18 @@ for msg in st.session_state.messages:
                     ):
 
                         TOOL_ICONS = {
-                            "search_web": "🔍",
-                            "browse_web": "🌐",
-                            "navigate_page": "🧭",
-                            "extract_data": "📄",
-                            "finish_task": "🏁",
-                        }
+                             "search_web": "🔍",
+                             "browse_web": "🌐",
+                             "navigate_page": "🧭",
+                             "extract_data": "📄",
+                             "click_element": "👆",
+                             "fill_form_field": "✍️",
+                             "scroll": "↕️",
+                             "take_screenshot": "📸",
+                             "observe_page": "👁️",
+                             "go_back": "⬅️",
+                             "finish_task": "🏁",
+                         }
 
                         for step in msg["steps"]:
 

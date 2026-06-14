@@ -20,6 +20,7 @@ class ChatResponse(BaseModel):
     tool_result: Optional[Any] = None
     raw_url: Optional[str] = None
     new_messages: Optional[List[Dict[str, Any]]] = None
+    steps: Optional[List[Dict[str, Any]]] = None
 
 
 class ScrapeRequest(BaseModel):
