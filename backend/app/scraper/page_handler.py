@@ -25,6 +25,14 @@ async def wait_for_selector(page: Page, selector: Optional[str]) -> None:
             print(f"Warning: Selector '{selector}' not found within timeout: {e}")
 
 
+async def scroll_to_top(page: Page) -> None:
+    try:
+        await page.evaluate("window.scrollTo(0, 0)")
+        await page.wait_for_timeout(500)
+    except Exception as e:
+        print(f"Warning: Scroll to top failed: {e}")
+
+
 async def scroll_to_bottom(page: Page) -> None:
     try:
         await page.evaluate(

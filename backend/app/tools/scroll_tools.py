@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 async def scroll(direction: str = "down") -> Dict[str, Any]:
     """
-    Scroll the current page up or down.
+    Scroll the current page up, down, to top, or to bottom.
     Returns the newly visible/extracted content after scrolling.
     """
     page = browser_manager.current_page
@@ -19,12 +19,20 @@ async def scroll(direction: str = "down") -> Dict[str, Any]:
         }
     
     try:
-        if direction.lower() == "down":
+        direction_lower = direction.lower()
+        if direction_lower == "down":
             await page.evaluate("window.scrollBy(0, window.innerHeight)")
-        elif direction.lower() == "up":
+        elif direction_lower == "up":
             await page.evaluate("window.scrollBy(0, -window.innerHeight)")
+        elif direction_lower == "top":
+            await page.evaluate("window.scrollTo(0, 0)")
+        elif direction_lower == "bottom":
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         else:
-            return {"success": False, "error": f"Invalid direction: {direction}. Use 'up' or 'down'."}
+            return {
+                "success": False,
+                "error": f"Invalid direction: {direction}. Use 'up', 'down', 'top', or 'bottom'.",
+            }
             
         await page.wait_for_timeout(1000)
         

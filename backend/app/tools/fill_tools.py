@@ -6,17 +6,98 @@ from app.scraper.browser import browser_manager
 from app.services.llm_service import get_openai_client
 from app.config import settings
 
-from app.scraper.screenshot import capture_screenshot_base64
+from app.scraper.screenshot import capture_screenshot_for_vision
 from app.services.vision_service import analyze_page_screenshot
+from app.scraper.page_state import detect_form_panel_state
 
 logger = logging.getLogger(__name__)
 
+_DESCRIPTION_FIELD_KEYWORDS = ("description", "about", "bio", "summary", "details", "long")
+
+
+async def _try_fast_panel_fill(
+    page, field_description: str, value: str
+) -> Optional[Dict[str, Any]]:
+    """Fill visible fields in an open edit panel without LLM or vision."""
+    panel = await detect_form_panel_state(page)
+    if not panel.get("panel_open"):
+        return None
+
+    fields = panel.get("fields", [])
+    if not fields:
+        return None
+
+    desc_lower = field_description.lower()
+    wants_description = any(k in desc_lower for k in _DESCRIPTION_FIELD_KEYWORDS)
+    target_idx: Optional[int] = None
+
+    if wants_description:
+        for f in fields:
+            label_lower = (f.get("label") or "").lower()
+            if f.get("isTextarea") or any(k in label_lower for k in _DESCRIPTION_FIELD_KEYWORDS):
+                target_idx = f["index"]
+                break
+
+    textareas = [f for f in fields if f.get("isTextarea")]
+    if target_idx is None and len(textareas) == 1:
+        target_idx = textareas[0]["index"]
+    if target_idx is None and len(fields) == 1:
+        target_idx = fields[0]["index"]
+    if target_idx is None and textareas:
+        target_idx = textareas[0]["index"]
+
+    if target_idx is None:
+        return None
+
+    loc = page.locator(f'[data-agent-field="{target_idx}"]')
+    if await loc.count() == 0:
+        return None
+
+    await loc.first.click()
+    await loc.first.fill(value)
+    panel_after = await detect_form_panel_state(page)
+    print(
+        f"✅ [PANEL FILL] Filled field index {target_idx} for '{field_description}' "
+        f"(no LLM/vision needed)"
+    )
+    return {
+        "success": True,
+        "message": f"Filled '{field_description}' in open edit panel (fast path).",
+        "form_panel_state": panel_after,
+        "instruction": (
+            f"Field filled. Now call click_element(intent=\""
+            f"{panel_after.get('submit_buttons', ['Save changes'])[0]}\") to save."
+        ),
+    }
+
 
 async def _fill_handle_failure(page, field_description: str, error_msg: str) -> Dict[str, Any]:
+    panel = await detect_form_panel_state(page)
+    if panel.get("panel_open"):
+        print(
+            f"⚠️  [FILL FAILED] '{field_description}' but panel is open — "
+            f"visible fields: {panel.get('fields')}. Vision skipped; use field labels shown."
+        )
+        return {
+            "success": False,
+            "error": error_msg,
+            "form_panel_state": panel,
+            "vision_guidance": (
+                f"Edit panel is open. Visible fields: {panel.get('fields')}. "
+                f"Try fill_form_field with the exact label from the list above."
+            ),
+        }
     try:
-        logger.info(f"Fill failed for '{field_description}'. Fetching vision guidance...")
-        base64_img = await capture_screenshot_base64(page)
-        vision_guidance = await analyze_page_screenshot(base64_img, f"Fill form field: {field_description}")
+        print(f"⚠️  [FILL FAILED] '{field_description}' — calling vision API...")
+        safe = re.sub(r"[^\w\-]", "_", field_description)[:40]
+        base64_img, screenshot_path = await capture_screenshot_for_vision(
+            page, context_label=f"fill_failed_{safe}"
+        )
+        vision_guidance = await analyze_page_screenshot(
+            base64_img,
+            f"Fill form field: {field_description}",
+            screenshot_path=screenshot_path,
+        )
         return {
             "success": False,
             "error": error_msg,
@@ -70,6 +151,11 @@ async def fill_form_field(field_description: str, value: str) -> Dict[str, Any]:
     page = browser_manager.current_page
     if not page or page.is_closed():
         return {"success": False, "error": "No active browser session."}
+
+    # Fast path: open edit panel with visible fields — no LLM needed
+    fast = await _try_fast_panel_fill(page, field_description, value)
+    if fast:
+        return fast
 
     # Try top-level page first, then each child frame
     frames_to_try = [page] + list(page.frames)

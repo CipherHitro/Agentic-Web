@@ -19,322 +19,435 @@ from app.tools.observe_tools import observe_page
 
 logger = logging.getLogger(__name__)
 
-
 ToolHandler = Callable[..., Awaitable[Dict[str, Any]]]
 
 
 def get_tool_definitions() -> List[Dict[str, Any]]:
     return [
+        # ── 1. search_web ──────────────────────────────────────────────────────
+        {
+            "type": "function",
+            "function": {
+                "name": "search_web",
+                "description": (
+                    "Search the internet and return a ranked list of URLs with titles and snippets. "
+                    "Use this to discover URLs when you don't have a direct link. "
+                    "Snippets are NOT a final answer — always follow up with browse_web on the best URL. "
+                    "Use the user's exact terms in the query. "
+                    "Do NOT use this to replace browse_web when the user explicitly names a website."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query. Use natural language with the user's exact terms.",
+                        },
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of results to return. Default 5.",
+                            "default": 5,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+
+        # ── 2. browse_web ──────────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "browse_web",
                 "description": (
-                    "Browse a website and extract its content. Use this when the user "
-                    "asks about a specific website, wants to read a webpage, or needs "
-                    "information from a URL."
+                    "Load any URL in a fresh browser session and return the page text and links. "
+                    "Use this to: open a specific website, jump to a new domain, or try a direct URL "
+                    "when navigation fails (e.g. browse_web('https://example.com/logout') instead of "
+                    "clicking a link that keeps failing). "
+                    "Each call starts a fresh browser context. "
+                    "Use navigate_page to go deeper within the current site."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "url": {
                             "type": "string",
-                            "description": "The full URL to browse, including http:// or https://",
+                            "description": "The full URL including https://",
                         },
                         "extract_content": {
                             "type": "boolean",
-                            "description": "Whether to extract the main text content",
+                            "description": "Whether to extract the main text content. Default true.",
                             "default": True,
                         },
                         "scroll_page": {
                             "type": "boolean",
-                            "description": "Whether to scroll the page to load lazy content",
-                            "default": True,
+                            "description": "Whether to scroll the page to load lazy content. Default false.",
+                            "default": False,
                         },
                     },
                     "required": ["url"],
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_web",
-                "description": "Search the internet for current, real-time, recent, product, pricing, company,news, release, availability and factual information.Always use this tool when the user asks about current prices, current events, recent releases, product availability,or information that may have changed.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query to look up on the web"
-                        },
-                        "count": {
-                            "type": "integer",
-                            "description": "The number of search results to return",
-                            "default": 5
-                        }
-                    },
-                    "required": ["query"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "extract_data",
-                "description": (
-                    "Extract specific data fields from a webpage's raw HTML or content. "
-                    "Use this tool when you need structured fields like price, description, "
-                    "date, or specific values from a webpage."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "fields": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            },
-                            "description": "The list of field names/descriptions to extract (e.g. ['price', 'product name'])",
-                        },
-                    },
-                    "required": ["fields"],
-                },
-            },
-        },
+
+        # ── 3. navigate_page ───────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "navigate_page",
                 "description": (
-                    "Statefully navigate to a new page or sub-page matching a specific intent. "
-                    "Use this tool to click links, open products, go to next pages, or click tabs. "
-                    "IMPORTANT: For GitHub profiles, use intent like 'go to stars tab' or "
-                    "'navigate to ?tab=stars'. Tab links often use URL query parameters."
+                    "Follow a link or open a sub-page within the CURRENT browser session. "
+                    "Use for going deeper into the same site: clicking a tab, opening a listing, "
+                    "going to page 2, following a sidebar link, or entering a sub-section. "
+                    "Describe your intent in plain language naming the target "
+                    "(e.g. 'open the repositories tab', 'go to settings', 'click the first result'). "
+                    "Do NOT use this to jump to a different domain — use browse_web for that."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "intent": {
                             "type": "string",
-                            "description": "The target navigation goal (e.g., 'click the first search result product', 'go to page 2', 'click on specifications tab')",
+                            "description": (
+                                "What you want to navigate to. Name the target section, link, or tab "
+                                "(e.g. 'go to the about section', 'open page 2', 'click settings link')."
+                            ),
                         },
                     },
                     "required": ["intent"],
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "finish_task",
-                "description": (
-                    "Submit the final answer and terminate the task. "
-                    "Use this ONLY when you have gathered all necessary information and are ready "
-                    "to provide the final complete answer to the user. "
-                    "You must NOT produce a final answer as plain text without calling this tool."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "answer": {
-                            "type": "string",
-                            "description": "The final complete and detailed answer to the user's query.",
-                        },
-                        "sources": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            },
-                            "description": "The list of absolute source URLs (e.g. websites browsed) used to gather information for this answer. Mandatory if the task required web lookup.",
-                        },
-                    },
-                    "required": ["answer"],
-                },
-            },
-        },
+
+        # ── 4. click_element ───────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "click_element",
                 "description": (
-                    "Click a button or interactive element on the current page. "
-                    "Use this for buttons that don't have links — like 'Submit', 'Search', "
-                    "'Load More', 'Accept', dropdowns, or any clickable UI element."
+                    "Click a button, toggle, dropdown trigger, modal opener, or any interactive element "
+                    "that is NOT a plain navigation link. "
+                    "Describe the target using its visible text, aria-label, or role "
+                    "(e.g. 'Submit button', 'Accept cookies', 'profile avatar to open user menu', "
+                    "'gear icon next to About section', 'Save changes button'). "
+                    "IMPORTANT: If the target element lives inside a dropdown, popup, or modal, "
+                    "you must first click the trigger that opens it, then call click_element again "
+                    "for the item inside. Never assume a dropdown item is clickable without opening "
+                    "the dropdown first. "
+                    "If this call fails, call observe_page to re-assess and try a different intent."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "intent": {
                             "type": "string",
-                            "description": "Describe what you want to click (e.g. 'Search button', 'Accept cookies', 'Load more results')",
-                        }
+                            "description": (
+                                "Describe the element to click using visible text, label, or role. "
+                                "Be specific: 'profile avatar' not just 'button', "
+                                "'gear icon next to About section' not just 'settings'."
+                            ),
+                        },
                     },
                     "required": ["intent"],
                 },
             },
         },
+
+        # ── 5. fill_form_field ─────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "fill_form_field",
                 "description": (
-                    "Type text into a form field on the current page. "
-                    "Use this to fill search boxes, login fields, contact forms, etc."
+                    "Type text into an input, textarea, or contenteditable field on the current page. "
+                    "Use the field's visible label or question text as field_description. "
+                    "IMPORTANT: If the input field does not exist yet on the page (because it is "
+                    "hidden inside a modal, settings panel, or edit dialog), you MUST first open "
+                    "that panel with click_element before calling this. "
+                    "Call observe_page first if you are unsure whether the field is currently visible. "
+                    "If this call fails, call observe_page to re-assess."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "field_description": {
                             "type": "string",
-                            "description": "Describe the specific field name or question label (e.g., 'What is your name?', 'college name') rather than generic placeholders like 'Your answer' or 'input'.",
+                            "description": (
+                                "The visible label or question text for the field "
+                                "(e.g. 'Short description', 'What is your name?', 'Email address'). "
+                                "Do NOT use generic placeholders like 'input' or 'text box'."
+                            ),
                         },
                         "value": {
                             "type": "string",
-                            "description": "The text to type into the field",
+                            "description": "The text to type into the field.",
                         },
                     },
                     "required": ["field_description", "value"],
                 },
             },
         },
+
+        # ── 6. read_form_fields ────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "read_form_fields",
                 "description": (
-                    "Scan the current page and return every form question with its type "
-                    "(text / radio_or_rating / checkbox) and available options. "
-                    "ALWAYS call this FIRST when asked to fill out a form, before calling "
-                    "fill_form_field or select_form_option."
+                    "Scan the current page and return every visible form question with its type "
+                    "(text / radio_or_rating / checkbox) and all available options. "
+                    "ALWAYS call this FIRST before filling any form — before any fill_form_field "
+                    "or select_form_option call. Never fill a form without reading it first."
                 ),
                 "parameters": {
                     "type": "object",
-                    "properties": {}
-                }
-            }
+                    "properties": {},
+                },
+            },
         },
+
+        # ── 7. select_form_option ──────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "select_form_option",
                 "description": (
-                    "Select a radio button, checkbox, linear-scale, star/rating, or dropdown option. "
-                    "question = the exact question text from read_form_fields. "
-                    "option = the exact option label to select (e.g. '1', 'Instagram', '5'). "
-                    "For checkbox questions needing multiple answers, call this once per option. "
-                    "NEVER use fill_form_field for radio buttons, checkboxes, scales, or ratings."
+                    "Select a radio button, checkbox, scale value, rating, or dropdown option. "
+                    "question = the exact question text returned by read_form_fields. "
+                    "option = the exact option label to select (e.g. 'Yes', 'Option A', '3'). "
+                    "For checkbox questions that need multiple values selected, call this once per value. "
+                    "NEVER use fill_form_field for radio, checkbox, scale, or rating questions — "
+                    "there is no text box for those, and fill_form_field will overwrite an unrelated field."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "question": {
                             "type": "string",
-                            "description": "The question text this option belongs to"
+                            "description": "The exact question text from read_form_fields.",
                         },
                         "option": {
                             "type": "string",
-                            "description": "The exact option label to select"
-                        }
+                            "description": "The exact option label to select.",
+                        },
                     },
-                    "required": ["question", "option"]
-                }
-            }
+                    "required": ["question", "option"],
+                },
+            },
         },
+
+        # ── 8. scroll ──────────────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "scroll",
-                "description": "Scroll the current page up or down. Use this when the answer might be further down the page.",
+                "description": (
+                    "Scroll the current page. Use 'down'/'up' for one viewport, "
+                    "'top' to jump to page header (find edit buttons after reading README), "
+                    "'bottom' to reach page footer. Max 3 scrolls per page before switching strategy."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "direction": {
                             "type": "string",
-                            "enum": ["up", "down"],
-                            "description": "Direction to scroll"
-                        }
+                            "enum": ["up", "down", "top", "bottom"],
+                            "description": "Scroll direction. Use 'top' when edit controls are above the fold.",
+                        },
                     },
-                    "required": []
-                }
-            }
+                    "required": [],
+                },
+            },
         },
+
+        # ── 9. get_current_url ─────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "get_current_url",
-                "description": "Get the current URL of the active browser page. Use this to verify you navigated to the correct page.",
+                "description": (
+                    "Return the URL of the active browser page. "
+                    "Use to verify navigation succeeded, or to discover where the browser is "
+                    "after a human logs in (so you can find the username or profile URL "
+                    "from the actual page rather than guessing)."
+                ),
                 "parameters": {
                     "type": "object",
-                    "properties": {}
-                }
-            }
+                    "properties": {},
+                },
+            },
         },
+
+        # ── 10. go_back ────────────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "go_back",
-                "description": "Go back to the previous page in the browser history. Use this to recover from incorrect navigations.",
+                "description": (
+                    "Navigate to the previous page in browser history. "
+                    "Use when navigate_page or click_element landed on the wrong page "
+                    "and you want to try again from the previous page."
+                ),
                 "parameters": {
                     "type": "object",
-                    "properties": {}
-                }
-            }
+                    "properties": {},
+                },
+            },
         },
+
+        # ── 11. take_screenshot ────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "take_screenshot",
-                "description": "Capture a screenshot of the current page. Use this when you want to visually record the state of the page.",
+                "description": (
+                    "Capture a screenshot of the current page and analyze it visually. "
+                    "Use this when: "
+                    "(a) a click or fill failed and you need to visually understand what is on screen, "
+                    "(b) observe_page returned unclear guidance, "
+                    "(c) you want to verify a task completed successfully (e.g. form submitted, change saved). "
+                    "After taking a screenshot, use the visual context to re-plan your next action."
+                ),
                 "parameters": {
                     "type": "object",
-                    "properties": {}
-                }
-            }
+                    "properties": {},
+                },
+            },
         },
+
+        # ── 12. extract_data ───────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
-                "name": "request_human_input",
+                "name": "extract_data",
                 "description": (
-                    "Pause the agent execution and request assistance, input, or an authentication action "
-                    "(like logging in, solving MFA/2FA, or solving a captcha) from the human. "
-                    "Use this tool when you hit a login screen, credentials/auth page, captcha, or need guidance. "
-                    "Do NOT try to guess credentials or solve captchas yourself."
+                    "Extract specific named fields from the current page content. "
+                    "Use after browse_web or navigate_page to pull structured information "
+                    "(prices, names, descriptions, counts, dates, etc.). "
+                    "Returns null per field if not found — never invents values. "
+                    "If a field comes back null, navigate to a sub-page or try a different URL."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "prompt": {
-                            "type": "string",
-                            "description": "The message to show the human explaining what they need to do (e.g. 'Please log in to GitHub on the browser screen' or 'Please solve the captcha on screen').",
-                        }
+                        "fields": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Field names or descriptions to extract "
+                                "(e.g. ['product price', 'description', 'star count'])."
+                            ),
+                        },
                     },
-                    "required": ["prompt"],
+                    "required": ["fields"],
                 },
             },
         },
+
+        # ── 13. observe_page ───────────────────────────────────────────────────
         {
             "type": "function",
             "function": {
                 "name": "observe_page",
                 "description": (
-                    "Analyze the current page and return a step-by-step action plan "
-                    "to achieve the given goal based on what's actually visible in the DOM."
+                    "Analyze the current page's visible interactive elements (buttons, inputs, links, "
+                    "dropdowns, modals) and return a step-by-step action plan to achieve the given goal "
+                    "based on what is ACTUALLY visible in the DOM right now. "
+                    "Use this BEFORE click_element or fill_form_field when: "
+                    "(1) the target might be inside a dropdown, popup, or settings panel, "
+                    "(2) a previous click or fill failed, "
+                    "(3) you are unsure what trigger to click to reveal a hidden field or menu. "
+                    "The plan it returns will tell you what to click first to reveal hidden elements. "
+                    "Always follow the plan step by step after calling this."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "goal": {
                             "type": "string",
-                            "description": "The current objective you want to achieve on this page (e.g. 'find logout button', 'fill description of repository').",
-                        }
+                            "description": (
+                                "The specific objective you want to achieve on this page "
+                                "(e.g. 'find and click the logout option', "
+                                "'open the edit panel for the repository description', "
+                                "'locate the save button after filling the form')."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
             },
-        }
+        },
+
+        # ── 14. request_human_input ────────────────────────────────────────────
+        {
+            "type": "function",
+            "function": {
+                "name": "request_human_input",
+                "description": (
+                    "Pause the agent and show a message to the human. "
+                    "Use ONLY for: login/authentication pages, MFA/2FA challenges, captchas, "
+                    "or cases where the task genuinely cannot proceed without a human action. "
+                    "Write a clear prompt telling the human exactly what to do and what to do next "
+                    "(e.g. 'Please log in on the browser screen. Once you are logged in, type Done here.'). "
+                    "After receiving the human's reply, immediately continue the task — "
+                    "do NOT re-plan from scratch. First call get_current_url to understand where "
+                    "the browser is, then extract data from the current page to discover any "
+                    "account-specific information (like username or profile URL) before navigating further. "
+                    "NEVER use this to ask for clarification on non-auth matters."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": (
+                                "The message shown to the human. Be specific: explain what they need "
+                                "to do on the browser screen and what they should type back when done."
+                            ),
+                        },
+                    },
+                    "required": ["prompt"],
+                },
+            },
+        },
+
+        # ── 15. finish_task ────────────────────────────────────────────────────
+        {
+            "type": "function",
+            "function": {
+                "name": "finish_task",
+                "description": (
+                    "Submit the final answer and end the task. "
+                    "Call this ONLY when the full task is complete — every step the user asked for "
+                    "has been executed and verified. "
+                    "For multi-step tasks, all steps must be done before calling this. "
+                    "answer = the direct, complete, factual result. "
+                    "sources = every URL browsed. Mandatory for any web task. "
+                    "If some steps could not be completed after exhausting all strategies, "
+                    "state clearly what was tried and what the outcome was. "
+                    "NEVER call this early just because one step failed — try all recovery strategies first."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "answer": {
+                            "type": "string",
+                            "description": "The complete result of the task. Describe every step that was done and its outcome.",
+                        },
+                        "sources": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "All URLs browsed during this task. Required for web tasks.",
+                        },
+                    },
+                    "required": ["answer"],
+                },
+            },
+        },
     ]
+
+
+# ── Tool registry ──────────────────────────────────────────────────────────────
 
 TOOL_REGISTRY: Dict[str, ToolHandler] = {
     "browse_web": browse_web,
@@ -363,28 +476,28 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         logger.error(f"Unknown tool: {name}")
         raise ValueError(f"Unknown tool: {name}") from exc
 
-    # Filter arguments to match the handler's signature to prevent TypeError: unexpected keyword argument
+    # Filter arguments to only those the handler accepts (prevents TypeError on extra kwargs)
     try:
         sig = inspect.signature(handler)
-        has_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-        if not has_kwargs:
-            valid_args = {k: v for k, v in arguments.items() if k in sig.parameters}
-        else:
-            valid_args = arguments
+        has_var_kwargs = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in sig.parameters.values()
+        )
+        valid_args = arguments if has_var_kwargs else {
+            k: v for k, v in arguments.items() if k in sig.parameters
+        }
     except Exception as e:
-        logger.warning(f"Failed to inspect signature of tool {name}: {e}")
+        logger.warning(f"Could not inspect signature of tool '{name}': {e}")
         valid_args = arguments
 
     retries = 3
     for attempt in range(1, retries + 1):
         try:
-            result = await handler(**valid_args)
-            return result
+            return await handler(**valid_args)
         except Exception as e:
-            logger.warning(f"Tool {name} attempt {attempt} failed: {e}")
+            logger.warning(f"Tool '{name}' attempt {attempt}/{retries} failed: {e}")
             if attempt < retries:
                 await asyncio.sleep(1.0)
             else:
-                logger.error(f"Tool {name} failed after {retries} attempts: {e}")
+                logger.error(f"Tool '{name}' failed after {retries} attempts: {e}")
                 return {"success": False, "error": str(e)}
-

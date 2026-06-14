@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
+import logging
 import os
 from dotenv import load_dotenv
 
@@ -9,6 +10,17 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 from app.scraper.browser import browser_manager
 from app.api.routes import router as api_router
+
+
+class _SuppressHumanStatusLogFilter(logging.Filter):
+    """Hide noisy /human/status polling from uvicorn access logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "/human/status" not in msg
+
+
+logging.getLogger("uvicorn.access").addFilter(_SuppressHumanStatusLogFilter())
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

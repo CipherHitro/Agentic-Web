@@ -9,6 +9,7 @@ from app.services.llm_service import get_openai_client
 from app.config import settings
 from app.tools.tool_registry import execute_tool, get_tool_definitions
 from app.scraper.browser import browser_manager
+from app.scraper.page_state import detect_form_panel_state
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,11 @@ logger = logging.getLogger(__name__)
 # browse_web returns up to 8000 chars of content plus 150 links + 50 nav links.
 # Serialized, that can exceed 30k chars — too much for lite models.
 MAX_TOOL_CONTENT_IN_CONVERSATION = 4000
+
+
+def _is_submit_click_intent(tool_args: dict) -> bool:
+    intent = str(tool_args.get("intent", "")).lower()
+    return any(k in intent for k in ("save", "submit", "apply", "confirm"))
 
 
 class AgentState(TypedDict):
@@ -31,6 +37,10 @@ def _truncate_tool_result_for_conversation(tool_name: str, tool_result: Any) -> 
     a lite model.  We keep the essential metadata and a truncated content slice;
     the links are intentionally dropped because they are only consumed internally
     by navigate_page (which reads them from Playwright, not from the conversation).
+
+    For failed tools we always preserve error + vision_guidance so the agent can
+    use them for recovery. For observe_page we also preserve current_url / page_title
+    so the agent can detect if it landed on the wrong page.
     """
     if not isinstance(tool_result, dict):
         return json.dumps(tool_result)
@@ -55,8 +65,46 @@ def _truncate_tool_result_for_conversation(tool_name: str, tool_result: Any) -> 
             slim["error"] = tool_result.get("error")
         return json.dumps(slim)
 
-    # For all other tools keep the full result (they are small).
-    return json.dumps(tool_result)
+    # For observe_page: always preserve current_url and page_title so the agent
+    # can detect wrong-page navigations, plus the action_plan and vision_guidance.
+    if tool_name == "observe_page":
+        slim = {
+            "success": tool_result.get("success"),
+            "current_url": tool_result.get("current_url"),
+            "page_title": tool_result.get("page_title"),
+            "visible_elements_count": tool_result.get("visible_elements_count"),
+            "action_plan": tool_result.get("action_plan"),
+            "next_action": tool_result.get("next_action"),
+            "instruction": tool_result.get("instruction"),
+            "scrolled_to_top": tool_result.get("scrolled_to_top"),
+            "elements_snapshot": tool_result.get("elements_snapshot"),
+        }
+        vision = tool_result.get("vision_guidance", "")
+        if isinstance(vision, str) and len(vision) > 1000:
+            slim["vision_guidance"] = vision[:1000] + "…"
+        else:
+            slim["vision_guidance"] = vision
+        return json.dumps(slim)
+
+    # For ALL other tools: keep the full result but always preserve error and
+    # vision_guidance (key for click/fill failure recovery).
+    result_copy = dict(tool_result)
+    serialized = json.dumps(result_copy)
+    # If the serialized result is reasonable size, return as-is
+    if len(serialized) <= 3000:
+        return serialized
+    # Otherwise slim it down but keep the critical fields
+    slim = {
+        "success": tool_result.get("success"),
+        "error": tool_result.get("error"),
+        "vision_guidance": tool_result.get("vision_guidance"),
+        "message": tool_result.get("message"),
+    }
+    # Add any extra fields that fit
+    for k, v in tool_result.items():
+        if k not in slim and isinstance(v, (str, int, float, bool)) and len(str(v)) < 500:
+            slim[k] = v
+    return json.dumps({k: v for k, v in slim.items() if v is not None})
 
 
 class AIAgent:
@@ -147,6 +195,12 @@ class AIAgent:
         extract_data_called = False
         extract_data_guardrail_fired = False
         consecutive_failures = 0  # unified counter: empty responses + text-only nudges
+        consecutive_tool_failures = 0
+        last_action_signature = None
+        repeat_count = 0
+        consecutive_observe_only = 0
+        last_observe_result: Dict[str, Any] = {}
+        form_panel_open = False
         state = AgentState(navigation_depth=0)
 
         # Scan only messages after the last user query to avoid contamination
@@ -458,6 +512,23 @@ class AIAgent:
                     final_answer = tool_args.get("answer", "") or tool_result.get(
                         "answer", ""
                     )
+                elif tool_name == "observe_page" and is_success:
+                    last_observe_result = (
+                        tool_result if isinstance(tool_result, dict) else {}
+                    )
+                elif tool_name in ("click_element", "fill_form_field") and is_success:
+                    pass  # form panel state updated below
+
+                if isinstance(tool_result, dict):
+                    fps = tool_result.get("form_panel_state") or {}
+                    if fps.get("panel_open") or tool_result.get(
+                        "skipped_redundant_click"
+                    ):
+                        form_panel_open = True
+                    elif tool_name == "click_element" and is_success and _is_submit_click_intent(
+                        tool_args
+                    ):
+                        form_panel_open = False
 
                 tools_in_step.append(tool_name)
                 last_tool_used = ", ".join(tools_in_step)
@@ -510,6 +581,145 @@ class AIAgent:
                     "raw_url": last_raw_url,
                     "new_messages": new_messages,
                 }
+
+            # ── Observe-only loop detection ─────────────────────────────
+            step_tool_names = {tc.function.name for tc in message.tool_calls}
+            progress_tools = {"click_element", "fill_form_field", "navigate_page", "browse_web", "scroll"}
+            if step_tool_names == {"observe_page"}:
+                consecutive_observe_only += 1
+            elif step_tool_names & progress_tools:
+                consecutive_observe_only = 0
+
+            if consecutive_observe_only >= 1 and last_observe_result:
+                # Prefer live form panel state over stale observe next_action
+                live_panel: Dict[str, Any] = {}
+                if browser_manager.current_page and not browser_manager.current_page.is_closed():
+                    try:
+                        live_panel = await detect_form_panel_state(
+                            browser_manager.current_page
+                        )
+                    except Exception:
+                        pass
+                panel = live_panel if live_panel.get("panel_open") else (
+                    last_observe_result.get("form_panel_state") or {}
+                )
+
+                if panel.get("panel_open") or form_panel_open:
+                    rec_tool = panel.get("recommended_next") or "fill_form_field"
+                    rec_intent = panel.get("recommended_intent") or "description"
+                    save_btn = (panel.get("submit_buttons") or ["Save changes"])[0]
+                    if rec_tool == "fill_form_field":
+                        action_line = (
+                            f"Edit panel is OPEN. Call fill_form_field(field_description=\"{rec_intent}\", "
+                            f"value=<your description text>). Do NOT call observe_page or click edit again."
+                        )
+                    else:
+                        action_line = (
+                            f"Edit panel is OPEN and fields are filled. "
+                            f"Call click_element(intent=\"{save_btn}\"). "
+                            f"Do NOT call observe_page or click edit again."
+                        )
+                else:
+                    next_action = last_observe_result.get("next_action") or {}
+                    next_tool = next_action.get("tool") or "click_element"
+                    next_intent = next_action.get("intent") or "the element identified in vision_guidance"
+                    vision_hint = (last_observe_result.get("vision_guidance") or "")[:400]
+                    if next_tool == "click_element":
+                        action_line = f'IMMEDIATELY call click_element with intent "{next_intent}".'
+                    elif next_tool == "scroll":
+                        direction = "top"
+                        if next_intent and "down" in next_intent.lower():
+                            direction = "down"
+                        elif next_intent and "up" in next_intent.lower():
+                            direction = "up"
+                        action_line = f"IMMEDIATELY call scroll(direction='{direction}')."
+                    elif next_tool == "fill_form_field":
+                        action_line = f'IMMEDIATELY call fill_form_field for "{next_intent}".'
+                    elif next_tool == "browse_web" and next_action.get("url"):
+                        action_line = f"IMMEDIATELY call browse_web(url='{next_action['url']}')."
+                    else:
+                        action_line = f"IMMEDIATELY call {next_tool} to make progress."
+                    vision_hint = (last_observe_result.get("vision_guidance") or "")[:400]
+                    act_nudge = (
+                        "[SYSTEM — ACT NOW] You called observe_page and received a plan. "
+                        "Do NOT call observe_page again without acting first.\n"
+                        f"{action_line}\n"
+                        + (f"Vision guidance: {vision_hint}\n" if vision_hint else "")
+                        + task_anchor
+                    )
+                    if consecutive_observe_only >= 1:
+                        print(f"🎯 [OBSERVE→ACT] Injecting action nudge after observe_page")
+                        act_msg = {"role": "user", "content": act_nudge}
+                        full_messages.append(act_msg)
+                        new_messages.append(act_msg)
+                    continue
+
+                act_nudge = (
+                    "[SYSTEM — PANEL OPEN] An edit form/dialog is already visible on screen. "
+                    "Do NOT call observe_page or click the edit trigger again.\n"
+                    f"{action_line}"
+                    + task_anchor
+                )
+                if consecutive_observe_only >= 1:
+                    print(f"🎯 [OBSERVE→ACT] Injecting action nudge after observe_page")
+                    act_msg = {"role": "user", "content": act_nudge}
+                    full_messages.append(act_msg)
+                    new_messages.append(act_msg)
+
+            # ── Stuck detection: consecutive action-tool failures ──────
+            action_tools = {"click_element", "fill_form_field", "navigate_page"}
+            step_had_action_failure = False
+            for tc in message.tool_calls:
+                tn = tc.function.name
+                if tn in action_tools:
+                    # Check if this specific tool failed
+                    tc_result = next(
+                        (tm for tm in tool_msgs if tm.get("tool_call_id") == tc.id),
+                        None
+                    )
+                    if tc_result:
+                        try:
+                            res_data = json.loads(tc_result["content"])
+                            if isinstance(res_data, dict) and not res_data.get("success", True):
+                                step_had_action_failure = True
+                        except Exception:
+                            pass
+
+            # Track action signature to detect repeats
+            action_sig = "|".join(
+                f"{tc.function.name}:{tc.function.arguments}"
+                for tc in message.tool_calls
+            )
+            if action_sig == last_action_signature:
+                repeat_count += 1
+            else:
+                repeat_count = 0
+            last_action_signature = action_sig
+
+            if step_had_action_failure:
+                consecutive_tool_failures += 1
+            else:
+                consecutive_tool_failures = 0
+
+            # Inject recovery nudge when stuck
+            if consecutive_tool_failures >= 2 or repeat_count >= 2:
+                stuck_nudge = (
+                    "[SYSTEM — STUCK DETECTED] You have failed the same type of action "
+                    f"{consecutive_tool_failures} time(s) in a row"
+                    + (f" and repeated the same action {repeat_count + 1} times" if repeat_count >= 2 else "")
+                    + ". You are STUCK. You MUST change strategy NOW:\n"
+                    "1. Call observe_page to see what is ACTUALLY on screen right now.\n"
+                    "2. Check if you are on the WRONG PAGE. If so, call go_back() to return to the previous page.\n"
+                    "3. Try a completely different approach — different click intent wording, "
+                    "a direct URL via browse_web, or scroll to find hidden elements.\n"
+                    "4. If nothing works after 3+ different strategies, take_screenshot to visually inspect the page.\n"
+                    "Do NOT repeat the same failing action. Do NOT call finish_task yet."
+                    + task_anchor
+                )
+                print(f"🔄 [STUCK DETECTED] Injecting recovery nudge (failures={consecutive_tool_failures}, repeats={repeat_count})")
+                stuck_msg = {"role": "user", "content": stuck_nudge}
+                full_messages.append(stuck_msg)
+                new_messages.append(stuck_msg)
 
         # ── Max steps exceeded ────────────────────────────────────────
         print(f"⚠️  [MAX STEPS] Exceeded {max_steps} steps.")
