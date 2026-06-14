@@ -128,8 +128,9 @@ FORM FILLING STRATEGY & ERROR RECOVERY
    you MUST check the success/error output returned by the tool.
    - If the tool returns `"success": False` or an error message:
      - DO NOT ignore the error and do NOT proceed to click "Submit".
-     - Try calling the tool again with a different wording/query (e.g., using a shorter or different part of the question text).
-     - If it still fails, call take_screenshot() to see if there is an overlay, popup, or if the page layout has changed.
+     - Try calling the tool again with a different wording/query (e.g., using a shorter or different part of the question text or a different label/value).
+     - If it is select_form_option and it still returns `"success": False` after retrying, move on and report the failure in finish_task — do not call take_screenshot() for this.
+     - For fill_form_field, if it still fails, you may call take_screenshot() to inspect the layout.
 6. NO REDUNDANT RE-FILLING: If a form field has already been successfully filled/selected,
    do NOT call the tool to fill it again. Doing so may overwrite your previous answers or cause infinite filling loops.
 7. SUBMISSION & POST-SUBMIT CHECK: After all questions are answered, call click_element(intent="Submit button").

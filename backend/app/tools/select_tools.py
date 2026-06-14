@@ -13,7 +13,15 @@ _SCAN_AND_TAG_JS = """
     let groupIndex = 0;
 
     // --- ARIA-based (Google Forms) ---
-    const ariaItems = document.querySelectorAll('[role="listitem"]');
+    const allListItems = Array.from(document.querySelectorAll('[role="listitem"]'));
+    const ariaItems = allListItems.filter(item => {
+        let p = item.parentElement;
+        while (p) {
+            if (p.getAttribute && p.getAttribute('role') === 'listitem') return false;
+            p = p.parentElement;
+        }
+        return true;
+    });
     for (const item of ariaItems) {
         const heading = item.querySelector('[role="heading"]');
         const question = heading ? heading.textContent.trim() : item.textContent.trim().slice(0, 100);
@@ -23,9 +31,10 @@ _SCAN_AND_TAG_JS = """
         const options = [];
         optionEls.forEach((el, i) => {
             const label = el.getAttribute('aria-label') || el.getAttribute('data-value') || el.textContent.trim();
+            const role = el.getAttribute('role') || el.type || el.tagName.toLowerCase();
             const selectId = `gform-${groupIndex}-${i}`;
             el.setAttribute('data-select-id', selectId);
-            options.push({ selectId, label, checked: el.getAttribute('aria-checked') === 'true' || el.selected });
+            options.push({ selectId, label, role, checked: el.getAttribute('aria-checked') === 'true' || el.selected });
         });
         groups.push({ question, options });
         groupIndex++;
@@ -48,7 +57,7 @@ _SCAN_AND_TAG_JS = """
         }
         const selectId = `native-${name}-${i}`;
         el.setAttribute('data-select-id', selectId);
-        native[name].options.push({ selectId, label: label || el.value || '', checked: el.checked });
+        native[name].options.push({ selectId, label: label || el.value || '', role: el.type, checked: el.checked });
     });
     return Object.values(native);
 }
@@ -130,9 +139,28 @@ async def select_form_option(question: str, option: str) -> Dict[str, Any]:
             if select_id.lower() == "none":
                 continue
 
+            # Locate the matched option's metadata (role + current checked state)
+            matched_option = None
+            for g in groups:
+                for o in g["options"]:
+                    if o["selectId"] == select_id:
+                        matched_option = o
+                        break
+                if matched_option:
+                    break
+
             locator = frame.locator(f'[data-select-id="{select_id}"]')
             if await locator.count() == 0:
                 continue
+
+            # --- CRITICAL: idempotency guard for checkboxes ---
+            # Clicking an ALREADY-CHECKED checkbox toggles it OFF.
+            # If it's already in the desired state, do nothing.
+            if matched_option and matched_option.get("role") == "checkbox" and matched_option.get("checked"):
+                return {
+                    "success": True,
+                    "message": f"'{option}' for question '{question}' was already selected (no-op)."
+                }
 
             # Native <option> handling
             element_tag = await locator.first.evaluate("el => el.tagName.toLowerCase()")
@@ -149,8 +177,34 @@ async def select_form_option(question: str, option: str) -> Dict[str, Any]:
             try:
                 await locator.first.click(timeout=3000)
             except Exception as click_err:
-                logger.warning(f"Standard click on option failed, attempting JS click: {click_err}")
+                logger.warning(f"Standard click failed, attempting JS click: {click_err}")
                 await locator.first.evaluate("el => el.click()")
+
+            # --- Verify the click actually registered ---
+            await asyncio.sleep(0.2)
+            if matched_option and matched_option.get("role") in ("checkbox", "radio"):
+                new_state = await locator.first.get_attribute("aria-checked")
+                if new_state != "true":
+                    # Retry with a raw pointer-event sequence (some custom
+                    # widgets ignore Playwright's synthetic .click())
+                    try:
+                        await locator.first.dispatch_event("pointerdown")
+                        await locator.first.dispatch_event("pointerup")
+                        await locator.first.dispatch_event("click")
+                        await asyncio.sleep(0.2)
+                        new_state = await locator.first.get_attribute("aria-checked")
+                    except Exception as e:
+                        logger.debug(f"Pointer-event fallback failed: {e}")
+
+                if new_state != "true":
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Clicked '{option}' for question '{question}' but aria-checked "
+                            f"did not become 'true'. The widget may not respond to synthetic "
+                            f"clicks here."
+                        )
+                    }
 
             return {
                 "success": True,
@@ -159,6 +213,59 @@ async def select_form_option(question: str, option: str) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"select_form_option failed in frame: {e}")
             continue
+
+    # Step 3: Vision fallback — locate the option by pixel coordinates
+    try:
+        import base64
+        screenshot_bytes = await page.screenshot(full_page=False)
+        base64_image = base64.b64encode(screenshot_bytes).decode("utf-8")
+        image_data_url = f"data:image/png;base64,{base64_image}"
+
+        if settings.nemotron_nvidia:
+            from openai import AsyncOpenAI as NvidiaAsyncOpenAI
+            vclient = NvidiaAsyncOpenAI(
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key=settings.nemotron_nvidia,
+            )
+            vision_model = "meta/llama-3.2-11b-vision-instruct"
+        else:
+            vclient = get_openai_client()
+            vision_model = settings.openrouter_model
+
+        viewport = page.viewport_size or {"width": 1920, "height": 1080}
+        prompt = (
+            f"This is a screenshot of a form ({viewport['width']}x{viewport['height']}px). "
+            f"Find the radio button, checkbox, or rating icon for the question "
+            f"\"{question}\" that corresponds to the option \"{option}\". "
+            "Return ONLY pixel coordinates as 'x,y' (e.g. '420,310') for the center "
+            "of that clickable element. Return 'None' if you cannot find it."
+        )
+
+        resp = await vclient.chat.completions.create(
+            model=vision_model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            }],
+            max_tokens=20,
+            temperature=0.0,
+        )
+        coords_str = resp.choices[0].message.content.strip().strip("\"'")
+
+        if coords_str.lower() != "none" and "," in coords_str:
+            x_str, y_str = coords_str.split(",")
+            x, y = float(x_str.strip()), float(y_str.strip())
+            await page.mouse.click(x, y)
+            await asyncio.sleep(0.3)
+            return {
+                "success": True,
+                "message": f"Selected '{option}' for question '{question}' via vision fallback at ({x}, {y})."
+            }
+    except Exception as e:
+        logger.error(f"Vision fallback for select_form_option failed: {e}")
 
     return {
         "success": False,

@@ -9,7 +9,15 @@ _FORM_SCAN_JS = """
     const result = [];
 
     // --- Strategy 1: ARIA-based (Google Forms style) ---
-    const ariaItems = document.querySelectorAll('[role="listitem"]');
+    const allListItems = Array.from(document.querySelectorAll('[role="listitem"]'));
+    const ariaItems = allListItems.filter(item => {
+        let p = item.parentElement;
+        while (p) {
+            if (p.getAttribute && p.getAttribute('role') === 'listitem') return false;
+            p = p.parentElement;
+        }
+        return true;
+    });
     for (const item of ariaItems) {
         const heading = item.querySelector('[role="heading"]');
         const question = heading ? heading.textContent.trim() : item.textContent.trim().slice(0, 100);
