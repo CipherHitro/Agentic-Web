@@ -2,13 +2,167 @@ import streamlit as st
 import requests
 import os
 import threading
-import time
 from dotenv import load_dotenv
 
 load_dotenv()
 
+st.set_page_config(
+    page_title="Agentic Web AI",
+    page_icon="🌐",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
 # Config
 API_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
+
+@st.cache_data(ttl=120)
+def fetch_backend_config():
+    """Load deployment mode from backend (development vs production)."""
+    try:
+        resp = requests.get(f"{API_URL}/config", timeout=5)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return {
+        "mode": "development",
+        "human_involvement_enabled": True,
+        "playwright_headed": True,
+    }
+
+
+backend_config = fetch_backend_config()
+human_handoff_enabled = backend_config.get("human_involvement_enabled", True)
+
+AGENT_LOADING_PHASES = [
+    "🔍 Searching the web for relevant sources…",
+    "🌐 Browsing pages and reading content…",
+    "📄 Extracting key information…",
+    "🧭 Navigating deeper into websites…",
+    "👁️ Observing page layout and controls…",
+    "🧠 Planning the next step…",
+    "⚡ Putting it all together…",
+]
+
+AGENT_LOADING_CSS = """
+<style>
+@keyframes agent-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes agent-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.45; }
+  40% { transform: translateY(-7px); opacity: 1; }
+}
+@keyframes agent-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(220%); }
+}
+@keyframes agent-pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.45); }
+  70% { box-shadow: 0 0 0 12px rgba(59, 130, 246, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+}
+.agent-loader-card {
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 14px;
+  padding: 1.1rem 1.25rem 1rem;
+  margin: 0.4rem 0 0.8rem;
+  background: linear-gradient(135deg, rgba(59,130,246,0.08), rgba(99,102,241,0.05));
+  animation: agent-pulse-ring 2.2s ease-out infinite;
+}
+.agent-loader-top {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+.agent-loader-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(59, 130, 246, 0.2);
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: agent-spin 0.9s linear infinite;
+  flex-shrink: 0;
+}
+.agent-loader-title {
+  font-size: 1.02rem;
+  font-weight: 600;
+  margin: 0;
+  color: inherit;
+}
+.agent-loader-phase {
+  margin: 0.35rem 0 0.55rem 2.15rem;
+  font-size: 0.95rem;
+  opacity: 0.92;
+  min-height: 1.35rem;
+  font-weight: 500;
+}
+.agent-loader-dots {
+  display: inline-flex;
+  gap: 5px;
+  margin-left: 2.15rem;
+}
+.agent-loader-dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3b82f6;
+  display: inline-block;
+  animation: agent-bounce 1.2s ease-in-out infinite;
+}
+.agent-loader-dots span:nth-child(2) { animation-delay: 0.15s; }
+.agent-loader-dots span:nth-child(3) { animation-delay: 0.3s; }
+.agent-loader-track {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.15);
+  overflow: hidden;
+  margin: 0.65rem 0 0 2.15rem;
+}
+.agent-loader-track-fill {
+  width: 42%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #3b82f6, #6366f1, transparent);
+  animation: agent-shimmer 1.6s ease-in-out infinite;
+}
+.agent-loader-hint {
+  margin: 0.55rem 0 0 2.15rem;
+  font-size: 0.82rem;
+  opacity: 0.72;
+}
+</style>
+"""
+
+
+def render_agent_loading_header() -> None:
+    st.markdown(AGENT_LOADING_CSS, unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="agent-loader-card">
+          <div class="agent-loader-top">
+            <div class="agent-loader-spinner"></div>
+            <p class="agent-loader-title">Agent is working — browsing the web</p>
+          </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_agent_loading_footer() -> None:
+    st.markdown(
+        """
+          <div class="agent-loader-dots"><span></span><span></span><span></span></div>
+          <div class="agent-loader-track"><div class="agent-loader-track-fill"></div></div>
+          <p class="agent-loader-hint">
+            Complex tasks can take several minutes — please keep this tab open.
+          </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # Thread safety classes
@@ -24,28 +178,98 @@ def run_chat_in_thread_safe(api_url, api_messages, container):
         response = requests.post(
             f"{api_url}/chat",
             json={"messages": api_messages},
-            timeout=600
+            timeout=600,
         )
-
         if response.status_code == 200:
             container.result = response.json()
         else:
             container.error = f"Backend error: {response.text}"
-
     except Exception as e:
         container.error = str(e)
-
     finally:
         container.done = True
 
 
-# Page setup
-st.set_page_config(
-    page_title="Agentic Web AI",
-    page_icon="🌐",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+def handle_agent_completion(container: ThreadResult) -> None:
+    """Apply chat API result to session state after the background thread finishes."""
+    st.session_state.agent_running = False
+    st.session_state.waiting_for_input = False
+    st.session_state.prompt = None
+
+    if container.error:
+        st.error(container.error)
+        return
+
+    if not container.result:
+        return
+
+    result = container.result
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": result["response"],
+        "tool_used": result.get("tool_used"),
+        "raw_url": result.get("raw_url"),
+        "tool_result": result.get("tool_result"),
+        "steps": result.get("steps", []),
+    })
+
+    if result.get("new_messages"):
+        st.session_state.api_messages.extend(result["new_messages"])
+    else:
+        st.session_state.api_messages.append({
+            "role": "assistant",
+            "content": result["response"],
+        })
+
+    if st.session_state.messages:
+        first_user = next(
+            (m["content"] for m in st.session_state.messages if m["role"] == "user"),
+            "New Chat",
+        )
+        session_snapshot = {
+            "title": first_user[:40],
+            "messages": st.session_state.messages.copy(),
+        }
+        if (
+            not st.session_state.chat_sessions
+            or st.session_state.chat_sessions[-1]["messages"] != session_snapshot["messages"]
+        ):
+            st.session_state.chat_sessions.append(session_snapshot)
+
+
+@st.fragment(run_every=1.0)
+def poll_agent_progress():
+    """Poll in a fragment; rotate status text while static CSS animations keep running."""
+    if not st.session_state.agent_running:
+        return
+
+    phase_idx = st.session_state.get("agent_phase_idx", 0) % len(AGENT_LOADING_PHASES)
+    st.session_state.agent_phase_idx = phase_idx + 1
+    st.markdown(
+        f'<p class="agent-loader-phase">{AGENT_LOADING_PHASES[phase_idx]}</p>',
+        unsafe_allow_html=True,
+    )
+
+    container = st.session_state.get("thread_container")
+    if container and container.done:
+        handle_agent_completion(container)
+        st.session_state.thread_container = None
+        st.rerun()
+        return
+
+    if human_handoff_enabled and not st.session_state.waiting_for_input:
+        try:
+            status_resp = requests.get(f"{API_URL}/human/status", timeout=3)
+            if status_resp.status_code == 200:
+                status = status_resp.json()
+                if status.get("waiting"):
+                    st.session_state.waiting_for_input = True
+                    st.session_state.prompt = status.get("prompt")
+                    st.rerun()
+        except Exception:
+            pass
+
 
 # Session state initialization
 if "messages" not in st.session_state:
@@ -112,6 +336,16 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
+
+    if backend_config.get("mode") == "production":
+        st.warning(
+            "Production mode: the agent runs headless. Login, MFA, and CAPTCHA "
+            "tasks cannot be handed off to you."
+        )
+    else:
+        st.caption(
+            "Development mode: headed browser + human handoff enabled for auth."
+        )
 
     st.info("Powered by OpenRouter + Playwright + FastAPI")
 
@@ -186,215 +420,42 @@ for msg in st.session_state.messages:
                 st.markdown(msg["content"])
 
 
-# Background thread polling
+# Agent running — animated status (fragment handles motion + polling)
 if st.session_state.agent_running:
+    render_agent_loading_header()
 
-    container = st.session_state.get("thread_container")
+    if human_handoff_enabled and st.session_state.waiting_for_input:
+        st.warning(
+            f"⚠️ **Human Input/Action Required:** "
+            f"{st.session_state.prompt}"
+        )
 
-    if container and container.done:
-
-        st.session_state.agent_running = False
-        st.session_state.waiting_for_input = False
-        st.session_state.prompt = None
-
-        if container.error:
-            st.error(container.error)
-
-        elif container.result:
-
-            result = container.result
-
-            # Add assistant response
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": result["response"],
-                "tool_used": result.get("tool_used"),
-                "raw_url": result.get("raw_url"),
-                "tool_result": result.get("tool_result"),
-                "steps": result.get("steps", [])
-            })
-
-            # Update API messages
-            if "new_messages" in result and result["new_messages"]:
-
-                st.session_state.api_messages.extend(
-                    result["new_messages"]
-                )
-
-            else:
-
-                st.session_state.api_messages.append({
-                    "role": "assistant",
-                    "content": result["response"]
-                })
-
-            # Save conversation history
-            if st.session_state.messages:
-
-                first_user = next(
-                    (
-                        m["content"]
-                        for m in st.session_state.messages
-                        if m["role"] == "user"
-                    ),
-                    "New Chat"
-                )
-
-                session_snapshot = {
-                    "title": first_user[:40],
-                    "messages": st.session_state.messages.copy()
-                }
-
-                if (
-                    not st.session_state.chat_sessions
-                    or st.session_state.chat_sessions[-1]["messages"]
-                    != session_snapshot["messages"]
-                ):
-                    st.session_state.chat_sessions.append(
-                        session_snapshot
-                    )
-
-            # Raw scraped data viewer
-            if (
-                result.get("tool_result")
-                and result["tool_result"].get("success")
-            ):
-
-                with st.expander(
-                    "📄 Raw Scraped Data",
-                    expanded=False
-                ):
-
-                    tool_res = result["tool_result"]
-
-                    st.markdown(
-                        f"**Title:** "
-                        f"{tool_res.get('title', 'N/A')}"
-                    )
-
-                    st.markdown(
-                        f"**URL:** "
-                        f"{tool_res.get('url', 'N/A')}"
-                    )
-
-                    if tool_res.get("links"):
-
-                        st.subheader("🔗 Links Found")
-
-                        for link in tool_res["links"][:10]:
-
-                            st.markdown(
-                                f"- [{link.get('text', 'Link')}]"
-                                f"({link.get('url')})"
-                            )
-
-                    if tool_res.get("content"):
-
-                        st.subheader("📝 Raw Content")
-
-                        st.text_area(
-                            "Content",
-                            tool_res["content"],
-                            height=300
-                        )
-
-        st.session_state.thread_container = None
-
-        st.rerun()
-
-    else:
-
-        # Waiting for human intervention
-        if st.session_state.waiting_for_input:
-
-            st.warning(
-                f"⚠️ **Human Input/Action Required:** "
-                f"{st.session_state.prompt}"
+        with st.form(key="human_input_form", clear_on_submit=True):
+            human_ans = st.text_input(
+                "Response / Confirmation text",
+                placeholder="Type response here (or leave blank and confirm)...",
             )
+            submitted_human = st.form_submit_button("Confirm & Resume AI")
 
-            with st.form(
-                key="human_input_form",
-                clear_on_submit=True
-            ):
-
-                human_ans = st.text_input(
-                    "Response / Confirmation text",
-                    placeholder=(
-                        "Type response here "
-                        "(or leave blank and confirm)..."
-                    )
-                )
-
-                submitted_human = st.form_submit_button(
-                    "Confirm & Resume AI"
-                )
-
-                if submitted_human:
-
-                    ans = (
-                        human_ans.strip()
-                        if human_ans.strip()
-                        else "done"
-                    )
-
-                    try:
-
-                        resp = requests.post(
-                            f"{API_URL}/human/response",
-                            json={"answer": ans}
-                        )
-
-                        if resp.status_code == 200:
-
-                            st.session_state.waiting_for_input = False
-                            st.session_state.prompt = None
-
-                            st.success(
-                                "Submitted! Resuming agent loop..."
-                            )
-
-                            st.rerun()
-
-                        else:
-                            st.error(
-                                f"Failed to submit: {resp.text}"
-                            )
-
-                    except Exception as e:
-                        st.error(
-                            f"Error submitting response: {e}"
-                        )
-
-        else:
-
-            with st.spinner(
-                "🤖 AI is thinking... "
-                "(may browse the web)"
-            ):
-
+            if submitted_human:
+                ans = human_ans.strip() if human_ans.strip() else "done"
                 try:
-
-                    status_resp = requests.get(
-                        f"{API_URL}/human/status"
+                    resp = requests.post(
+                        f"{API_URL}/human/response",
+                        json={"answer": ans},
                     )
+                    if resp.status_code == 200:
+                        st.session_state.waiting_for_input = False
+                        st.session_state.prompt = None
+                        st.success("Submitted! Resuming agent loop...")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to submit: {resp.text}")
+                except Exception as e:
+                    st.error(f"Error submitting response: {e}")
 
-                    if status_resp.status_code == 200:
-
-                        status = status_resp.json()
-
-                        if status.get("waiting"):
-
-                            st.session_state.waiting_for_input = True
-                            st.session_state.prompt = status["prompt"]
-
-                            st.rerun()
-
-                except Exception:
-                    pass
-
-                time.sleep(1.5)
-
-                st.rerun()
+    poll_agent_progress()
+    render_agent_loading_footer()
 
 
 # Input area
@@ -461,6 +522,7 @@ if not st.session_state.agent_running:
         st.session_state.chat_error = None
         st.session_state.waiting_for_input = False
         st.session_state.prompt = None
+        st.session_state.agent_phase_idx = 0
 
         # Launch background thread
         container = ThreadResult()
@@ -479,13 +541,6 @@ if not st.session_state.agent_running:
         thread.start()
 
         st.rerun()
-
-else:
-
-    st.info(
-        "Agent is currently executing a task. "
-        "Please wait or respond to the handoff request above."
-    )
 
 
 # Footer
