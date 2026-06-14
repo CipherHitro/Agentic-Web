@@ -15,6 +15,7 @@ from app.tools.select_tools import select_form_option
 from app.tools.scroll_tools import scroll
 from app.tools.screenshot_tools import take_screenshot
 from app.tools.human_tools import request_human_input
+from app.tools.observe_tools import observe_page
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +313,26 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                     "required": ["prompt"],
                 },
             },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "observe_page",
+                "description": (
+                    "Analyze the current page and return a step-by-step action plan "
+                    "to achieve the given goal based on what's actually visible in the DOM."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {
+                            "type": "string",
+                            "description": "The current objective you want to achieve on this page (e.g. 'find logout button', 'fill description of repository').",
+                        }
+                    },
+                    "required": ["goal"],
+                },
+            },
         }
     ]
 
@@ -330,6 +351,7 @@ TOOL_REGISTRY: Dict[str, ToolHandler] = {
     "go_back": go_back,
     "take_screenshot": take_screenshot,
     "request_human_input": request_human_input,
+    "observe_page": observe_page,
 }
 
 

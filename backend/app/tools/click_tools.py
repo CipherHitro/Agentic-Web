@@ -6,7 +6,29 @@ from app.tools.extraction_tools import extract_clean_content
 from app.services.llm_service import get_openai_client
 from app.config import settings
 
+from app.scraper.screenshot import capture_screenshot_base64
+from app.services.vision_service import analyze_page_screenshot
+
 logger = logging.getLogger(__name__)
+
+
+async def _click_handle_failure(page, intent: str, error_msg: str) -> Dict[str, Any]:
+    try:
+        logger.info(f"Click failed for '{intent}'. Fetching vision guidance...")
+        base64_img = await capture_screenshot_base64(page)
+        vision_guidance = await analyze_page_screenshot(base64_img, f"Click element: {intent}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "vision_guidance": vision_guidance
+        }
+    except Exception as ve:
+        logger.error(f"Vision analysis fallback failed: {ve}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "vision_guidance": f"Vision guidance failed: {str(ve)}"
+        }
 
 
 async def click_element(intent: str) -> Dict[str, Any]:
@@ -21,6 +43,9 @@ async def click_element(intent: str) -> Dict[str, Any]:
             "error": "No active browser session. Call browse_web first."
         }
 
+    # Wait for layout/animations to settle before scanning elements
+    await page.wait_for_timeout(1000)
+
     html = await page.content()
     base_url = page.url
 
@@ -28,36 +53,63 @@ async def click_element(intent: str) -> Dict[str, Any]:
     client = get_openai_client()
 
     # Build a list of interactive elements from the page
-    elements = await page.evaluate("""
-        () => {
-            const results = [];
-            const selectors = ['button', '[role="button"]', 'input[type="submit"]',
-                              'input[type="button"]', 'a', '[onclick]', '[class*="btn"]',
-                              '[class*="button"]'];
-            for (const sel of selectors) {
-                for (const el of document.querySelectorAll(sel)) {
-                    const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
-                    const id = el.id ? `#${el.id}` : '';
-                    const cls = el.className ? `.${el.className.split(' ')[0]}` : '';
-                    if (text) {
-                        results.push({
-                            tag: el.tagName.toLowerCase(),
-                            text: text.slice(0, 80),
-                            id: id,
-                            cls: cls,
-                            selector: id || (el.tagName.toLowerCase() + cls)
-                        });
-                    }
-                    if (results.length >= 50) break;
+    elements = await page.evaluate("""() => {
+        const getElementText = (el) => {
+            let text = (el.innerText || el.value || el.getAttribute('aria-label') || 
+                        el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('placeholder') ||
+                        el.getAttribute('data-login') || '').trim();
+            if (!text) {
+                const childImg = el.querySelector('img');
+                if (childImg) {
+                    text = (childImg.getAttribute('alt') || childImg.getAttribute('title') || childImg.getAttribute('aria-label') || '').trim();
                 }
-                if (results.length >= 50) break;
             }
-            return results;
-        }
-    """)
+            if (!text) {
+                const children = el.querySelectorAll('*');
+                for (const child of children) {
+                    text = (child.innerText || child.getAttribute('aria-label') || child.getAttribute('alt') || '').trim();
+                    if (text) break;
+                }
+            }
+            return text;
+        };
+
+        const seen = new Set();
+        const results = [];
+        
+        const selectors = [
+            'button', '[role="button"]', 'input[type="submit"]',
+            'input[type="button"]', 'a[href]', '[onclick]',
+            'summary',          // <details><summary> dropdowns (GitHub uses this!)
+            '[tabindex="0"]',   // keyboard-focusable custom elements
+            'label[for]'        // clickable labels
+        ];
+        
+        document.querySelectorAll(selectors.join(',')).forEach(el => {
+            // Only visible elements
+            if (el.offsetParent === null && el.tagName !== 'SUMMARY') return;
+            
+            const text = getElementText(el);
+            const key = text + el.tagName + el.className;
+            if (seen.has(key) || !text) return;
+            seen.add(key);
+            
+            results.push({
+                text: text.slice(0, 100),
+                tag: el.tagName.toLowerCase(),
+                type: el.type || '',
+                ariaLabel: el.getAttribute('aria-label') || '',
+                title: el.getAttribute('title') || '',
+                id: el.id || '',
+                classes: el.className.slice(0, 60),
+                selector: el.id ? `#${el.id}` : (el.tagName.toLowerCase() + (el.className ? `.${el.className.split(' ')[0]}` : ''))
+            });
+        });
+        return results.slice(0, 60);
+    }""")
 
     if not elements:
-        return {"success": False, "error": "No clickable elements found on page."}
+        return await _click_handle_failure(page, intent, "No clickable elements found on page.")
 
     formatted = "\n".join(
         f"- Tag: {e['tag']} | Text: '{e['text']}' | Selector: {e['selector']}"
@@ -80,24 +132,130 @@ async def click_element(intent: str) -> Dict[str, Any]:
         )
         target_text = resp.choices[0].message.content.strip().strip("\"'")
     except Exception as e:
-        return {"success": False, "error": f"LLM selector pick failed: {e}"}
+        return await _click_handle_failure(page, intent, f"LLM selector pick failed: {e}")
 
     if target_text.lower() == "none":
-        return {"success": False, "error": f"No element found matching: '{intent}'"}
+        return await _click_handle_failure(page, intent, f"No element found matching: '{intent}'")
 
     # Step 2: Click it using text matching (most reliable cross-site approach)
     try:
-        # Try exact text match first
-        locator = page.get_by_role("button", name=target_text, exact=False)
-        count = await locator.count()
+        # Tag the target element in the DOM using the same getElementText scanner rules
+        tagged = await page.evaluate("""(txt) => {
+            const getElementText = (el) => {
+                let text = (el.innerText || el.value || el.getAttribute('aria-label') || 
+                            el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('placeholder') ||
+                            el.getAttribute('data-login') || '').trim();
+                if (!text) {
+                    const childImg = el.querySelector('img');
+                    if (childImg) {
+                        text = (childImg.getAttribute('alt') || childImg.getAttribute('title') || childImg.getAttribute('aria-label') || '').trim();
+                    }
+                }
+                if (!text) {
+                    const children = el.querySelectorAll('*');
+                    for (const child of children) {
+                        text = (child.innerText || child.getAttribute('aria-label') || child.getAttribute('alt') || '').trim();
+                        if (text) break;
+                    }
+                }
+                return text;
+            };
 
-        if count == 0:
-            # Fallback: any element with that text
-            locator = page.get_by_text(target_text, exact=False).first
+            const selectors = [
+                'button', '[role="button"]', 'input[type="submit"]',
+                'input[type="button"]', 'a[href]', '[onclick]',
+                'summary', '[tabindex="0"]', 'label[for]'
+            ];
 
-        await locator.click(timeout=8000)
-        await page.wait_for_load_state("domcontentloaded", timeout=8000)
-        await scroll_to_bottom(page)
+            const candidates = Array.from(document.querySelectorAll(selectors.join(',')))
+                .filter(el => el.offsetParent !== null || el.tagName === 'SUMMARY');
+
+            // Exact match priority
+            let match = candidates.find(el => getElementText(el).trim().toLowerCase() === txt.trim().toLowerCase());
+            if (!match) {
+                // Substring fallback
+                match = candidates.find(el => getElementText(el).toLowerCase().includes(txt.toLowerCase()));
+            }
+
+            if (match) {
+                match.setAttribute('data-agent-click', 'true');
+                return true;
+            }
+            return false;
+        }""", target_text)
+
+        if tagged:
+            tagged_html = await page.evaluate("""() => {
+                const el = document.querySelector('[data-agent-click="true"]');
+                return el ? el.outerHTML : 'None';
+            }""")
+            logger.debug(f"Tagged element outer HTML: {tagged_html}")
+
+            # Check if this element is a menu/dropdown/popup toggle
+            is_toggle = await page.evaluate("""() => {
+                const el = document.querySelector('[data-agent-click="true"]');
+                if (!el) return false;
+                if (el.tagName === 'SUMMARY') return true;
+                if (el.getAttribute('aria-haspopup') && el.getAttribute('aria-haspopup') !== 'false') return true;
+                if (el.getAttribute('aria-expanded') !== null) return true;
+                
+                const classes = (el.className || '').toLowerCase();
+                const id = (el.id || '').toLowerCase();
+                if (classes.includes('menu') || classes.includes('dropdown') || classes.includes('toggle') || classes.includes('avatar')) return true;
+                if (id.includes('menu') || id.includes('dropdown') || id.includes('toggle') || id.includes('avatar')) return true;
+                return false;
+            }""")
+
+            # Also check text
+            is_text_toggle = any(x in target_text.lower() for x in ["settings", "profile", "avatar", "menu", "open", "cipherhitro", "rohit"])
+
+            if is_toggle or is_text_toggle:
+                logger.info(f"Target '{target_text}' identified as a menu/dropdown toggle. Executing DOM click dispatch only to avoid double-toggling.")
+                await page.evaluate("""() => {
+                    const el = document.querySelector('[data-agent-click="true"]');
+                    if (el) {
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        if (typeof el.focus === 'function') el.focus();
+                    }
+                }""")
+            else:
+                # Try Playwright native pointer click first for normal buttons/links
+                try:
+                    await page.click('[data-agent-click="true"]', timeout=2000)
+                except Exception as native_err:
+                    logger.warning(f"Native click failed for normal element: {native_err}. Falling back to DOM click dispatch.")
+                    await page.evaluate("""() => {
+                        const el = document.querySelector('[data-agent-click="true"]');
+                        if (el) {
+                            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                            if (typeof el.focus === 'function') el.focus();
+                        }
+                    }""")
+            
+            # Clean up attribute
+            await page.evaluate("""() => {
+                const el = document.querySelector('[data-agent-click="true"]');
+                if (el) el.removeAttribute('data-agent-click');
+            }""")
+        else:
+            # Fallback to standard selectors if DOM tagging failed
+            summary_locator = page.locator("summary", has_text=target_text)
+            if await summary_locator.count() > 0:
+                await summary_locator.first.click()
+            else:
+                locator = page.get_by_role("button", name=target_text, exact=False)
+                if await locator.count() == 0:
+                    locator = page.get_by_text(target_text, exact=False).first
+                await locator.click(timeout=4000)
+
+        # Wait for potential animation or navigation
+        await page.wait_for_timeout(2000)
+        await page.wait_for_load_state("domcontentloaded", timeout=4000)
+
+        # Skip scrolling for dropdown/settings clicks
+        is_dropdown = any(x in target_text.lower() for x in ["settings", "profile", "avatar", "menu", "open", "cipherhitro", "rohit"])
+        if not is_dropdown:
+            await scroll_to_bottom(page)
 
         # Check for validation/required field errors on the page after clicking
         validation_errors = await page.evaluate("""
@@ -158,4 +316,4 @@ async def click_element(intent: str) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Click failed for '{target_text}': {e}")
-        return {"success": False, "error": f"Click failed: {str(e)}"}
+        return await _click_handle_failure(page, intent, f"Click failed: {str(e)}")

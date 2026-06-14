@@ -6,7 +6,29 @@ from app.scraper.browser import browser_manager
 from app.services.llm_service import get_openai_client
 from app.config import settings
 
+from app.scraper.screenshot import capture_screenshot_base64
+from app.services.vision_service import analyze_page_screenshot
+
 logger = logging.getLogger(__name__)
+
+
+async def _fill_handle_failure(page, field_description: str, error_msg: str) -> Dict[str, Any]:
+    try:
+        logger.info(f"Fill failed for '{field_description}'. Fetching vision guidance...")
+        base64_img = await capture_screenshot_base64(page)
+        vision_guidance = await analyze_page_screenshot(base64_img, f"Fill form field: {field_description}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "vision_guidance": vision_guidance
+        }
+    except Exception as ve:
+        logger.error(f"Vision analysis fallback failed: {ve}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "vision_guidance": f"Vision guidance failed: {str(ve)}"
+        }
 
 
 async def pick_best_field(inputs: list, field_description: str) -> Optional[int]:
@@ -302,5 +324,5 @@ async def fill_form_field(field_description: str, value: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Vision fallback failed: {e}")
 
-    return {"success": False, "error": f"Field not found in any frame: '{field_description}'"}
+    return await _fill_handle_failure(page, field_description, f"Field not found in any frame: '{field_description}'")
 

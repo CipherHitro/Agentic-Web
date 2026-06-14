@@ -49,11 +49,7 @@ class BrowserManager:
         self.current_page: Optional[Page] = None
         self.current_context: Optional[BrowserContext] = None
 
-    async def _close_internal(self):
-        if not self._browser and not self._playwright:
-            logger.info("Browser is already closed or not initialized.")
-            return
-
+    async def _save_session_state(self):
         if self.current_context and self.current_page:
             try:
                 url = self.current_page.url
@@ -63,6 +59,13 @@ class BrowserManager:
                     await self.current_context.storage_state(path=session_path)
             except Exception as e:
                 logger.warning(f"Could not save storage state: {e}")
+
+    async def _close_internal(self):
+        if not self._browser and not self._playwright:
+            logger.info("Browser is already closed or not initialized.")
+            return
+
+        await self._save_session_state()
 
         if self._browser:
             try:
@@ -161,6 +164,7 @@ class BrowserManager:
         """Main browsing tool. Returns clean, structured content for the AI with retries on failure."""
         # Close previous context/page if any to start fresh on a new root URL
         if self.current_context:
+            await self._save_session_state()
             try:
                 await self.current_context.close()
             except Exception:
@@ -193,6 +197,9 @@ class BrowserManager:
 
                 if scroll_page:
                     await scroll_to_bottom(page)
+
+                # Wait for client-side JS/SPA hydration to settle
+                await asyncio.sleep(2.0)
 
                 title = await page.title()
                 html_content = await page.content()
